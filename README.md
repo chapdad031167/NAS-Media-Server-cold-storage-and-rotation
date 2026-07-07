@@ -1,0 +1,1 @@
+# NAS-Media-Server-cold-storage-and-rotation
