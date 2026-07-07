@@ -418,6 +418,34 @@ class TestApiGet:
             assert scan.api_get("http://radarr:7878", "sekret", "movie") is None
 
 
+class TestNotify:
+    def test_noop_when_unconfigured(self):
+        with mock.patch.object(scan.urllib.request, "urlopen") as m:
+            scan.notify({"NTFY_URL": "", "DISCORD_WEBHOOK_URL": ""}, "hello")
+        m.assert_not_called()
+
+    def test_posts_to_ntfy_and_discord(self):
+        cfg = {
+            "NTFY_URL": "https://ntfy.example/topic",
+            "DISCORD_WEBHOOK_URL": "https://discord.example/hook",
+        }
+        with mock.patch.object(scan.urllib.request, "urlopen") as m:
+            m.return_value.__enter__ = lambda s: s
+            m.return_value.__exit__ = lambda s, *a: False
+            scan.notify(cfg, "3 candidates ready")
+        assert m.call_count == 2
+        ntfy_req, discord_req = m.call_args_list[0][0][0], m.call_args_list[1][0][0]
+        assert ntfy_req.full_url == "https://ntfy.example/topic"
+        assert ntfy_req.data == b"3 candidates ready"
+        assert json.loads(discord_req.data.decode()) == {"content": "3 candidates ready"}
+
+    def test_failed_push_never_raises(self):
+        cfg = {"NTFY_URL": "https://ntfy.example/topic", "DISCORD_WEBHOOK_URL": ""}
+        err = urllib.error.URLError("no route to host")
+        with mock.patch.object(scan.urllib.request, "urlopen", side_effect=err):
+            scan.notify(cfg, "hello")  # must not raise
+
+
 # --- End-to-end scan over mocked API data ---------------------------------
 
 

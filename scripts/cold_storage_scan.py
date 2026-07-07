@@ -88,6 +88,8 @@ DEFAULTS = {
     "PROTECTED_LIST_FILE": os.path.join(_SCRIPT_DIR, "..", "protected_franchises.txt"),
     "LOG_RETENTION_DAYS": "90",
     "LOCK_DIR": "/tmp",
+    "NTFY_URL": "",
+    "DISCORD_WEBHOOK_URL": "",
 }
 
 
@@ -226,6 +228,34 @@ def api_get(base_url, apikey, endpoint):
     except urllib.error.URLError as e:
         log(f"ERROR: API call failed ({url}): {e}")
         return None
+
+
+def notify(cfg, message):
+    """Best-effort push notification (ntfy and/or Discord webhook).
+    No-op when neither URL is configured; a failed push warns but
+    never breaks the run."""
+    ntfy = cfg.get("NTFY_URL", "")
+    if ntfy:
+        try:
+            req = urllib.request.Request(
+                ntfy, data=message.encode(), headers={"Title": "cold_storage_scan"}
+            )
+            with urllib.request.urlopen(req, timeout=10):
+                pass
+        except Exception as e:
+            log(f"WARNING: ntfy notification failed: {e}")
+    discord = cfg.get("DISCORD_WEBHOOK_URL", "")
+    if discord:
+        try:
+            req = urllib.request.Request(
+                discord,
+                data=json.dumps({"content": message}).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=10):
+                pass
+        except Exception as e:
+            log(f"WARNING: discord notification failed: {e}")
 
 
 def parse_added(date_str, now=None):
@@ -482,6 +512,11 @@ def main():
         json.dump(output, f, indent=2)
 
     log(f"Candidate list written to {cfg['CANDIDATE_FILE']}")
+    notify(
+        cfg,
+        f"cold_storage_scan: {len(all_candidates)} candidate(s) "
+        f"({human_size(total_size)}) ready for review",
+    )
     lock.close()
 
 
