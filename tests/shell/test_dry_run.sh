@@ -152,11 +152,54 @@ check "grown source skipped" grep -q "Source grew since scan" <<<"$OUT"
 check "grown source kept on disk" test -d "$SRC"
 rm -f "$SRC/extras.bonus.mkv"
 
+# Capacity target: pool already at/below target -> nothing moves
+OUT=$(POOL_TARGET_PCT=100 bash "$SCRIPTS/cold_storage_cycle.sh" --run)
+check "capacity target stops before any move" grep -q "stopping here" <<<"$OUT"
+check "capacity target moved nothing" test -d "$SRC"
+
+# Unreachable notification endpoint must never break a run
+if NTFY_URL="http://127.0.0.1:9" bash "$SCRIPTS/cold_storage_cycle.sh" >/dev/null 2>&1; then
+    check "unreachable NTFY_URL does not break the run" true
+else
+    check "unreachable NTFY_URL does not break the run" false
+fi
+
 OUT=$(bash "$SCRIPTS/cold_storage_cycle.sh" --run)
 check "--run moves source to cold storage" test ! -e "$SRC"
 check "--run destination exists" test -f "$COLD_ROOT/Movies/Old Drama (2010)/Old.Drama.2010.1080p.mkv"
 check "move is checksum verified" grep -q "checksum verified OK" <<<"$OUT"
 check "unmonitor skipped without API key" grep -q "UNMONITOR: skipped (no API key" <<<"$OUT"
+
+# --- archive manifest + cold_storage_restore.sh --------------
+echo "=== cold_storage_restore.sh ==="
+export MANIFEST_FILE="$COLD_ROOT/cold_storage_manifest.jsonl"
+check "manifest written on archive" test -f "$MANIFEST_FILE"
+check "manifest records the archived event" grep -q '"event": "archived"' "$MANIFEST_FILE"
+check "manifest records the radarr id" grep -q '"id": "42"' "$MANIFEST_FILE"
+
+OUT=$(bash "$SCRIPTS/cold_storage_restore.sh")
+check "list mode shows archived item" grep -q "Old Drama (2010)" <<<"$OUT"
+
+OUT=$(bash "$SCRIPTS/cold_storage_restore.sh" "old drama")
+check "restore dry run is the default" grep -q "DRY_RUN: true" <<<"$OUT"
+check "restore dry run moves nothing" test -d "$COLD_ROOT/Movies/Old Drama (2010)"
+check "restore dry run resolves id from manifest" grep -q "Re-monitor: yes (movie id 42" <<<"$OUT"
+
+# Ambiguous queries are refused
+mkfile "$COLD_ROOT/Movies/Old Drama Returns (2012)/file.mkv" 1024
+if bash "$SCRIPTS/cold_storage_restore.sh" "old drama" >/dev/null 2>&1; then
+    check "ambiguous restore query refused" false
+else
+    check "ambiguous restore query refused" true
+fi
+rm -rf "$COLD_ROOT/Movies/Old Drama Returns (2012)"
+
+OUT=$(bash "$SCRIPTS/cold_storage_restore.sh" "old drama" --run)
+check "--run restores item to hot pool" test -f "$MOVIES_DIR/Old Drama (2010)/Old.Drama.2010.1080p.mkv"
+check "--run removes archive copy" test ! -e "$COLD_ROOT/Movies/Old Drama (2010)"
+check "restore is checksum verified" grep -q "checksum verified OK" <<<"$OUT"
+check "re-monitor skipped without API key" grep -q "RE-MONITOR: skipped (no API key" <<<"$OUT"
+check "manifest records the restored event" grep -q '"event": "restored"' "$MANIFEST_FILE"
 
 echo
 echo "shell tests: $PASS passed, $FAIL failed"
