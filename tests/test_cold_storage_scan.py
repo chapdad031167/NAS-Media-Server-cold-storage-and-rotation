@@ -418,6 +418,135 @@ class TestApiGet:
             assert scan.api_get("http://radarr:7878", "sekret", "movie") is None
 
 
+class TestWatchedGuard:
+    """v2.4: Tautulli last-played guard. Missing index (Tautulli
+    unconfigured/unreachable) must behave exactly like pre-v2.4."""
+
+    def _index(self, movie_days_ago=None, tv_days_ago=None):
+        idx = {"movie": {}, "tv": {}}
+        if movie_days_ago is not None:
+            idx["movie"][("some obscure drama", 0)] = (
+                NOW.timestamp() - movie_days_ago * 86400
+            )
+        if tv_days_ago is not None:
+            idx["tv"]["some finished drama"] = NOW.timestamp() - tv_days_ago * 86400
+        return idx
+
+    def test_recently_watched_movie_skipped(self):
+        category, reason = scan.evaluate_movie(
+            make_movie(), CFG, PATH_MAP, now=NOW, path_exists=EXISTS,
+            watch_index=self._index(movie_days_ago=30),
+        )
+        assert category == "watched"
+        assert "played 30d ago" in reason
+
+    def test_long_unwatched_movie_still_candidate(self):
+        category, _ = scan.evaluate_movie(
+            make_movie(), CFG, PATH_MAP, now=NOW, path_exists=EXISTS,
+            watch_index=self._index(movie_days_ago=400),
+        )
+        assert category == "candidate"
+
+    def test_never_watched_movie_still_candidate(self):
+        category, _ = scan.evaluate_movie(
+            make_movie(), CFG, PATH_MAP, now=NOW, path_exists=EXISTS,
+            watch_index={"movie": {}, "tv": {}},
+        )
+        assert category == "candidate"
+
+    def test_no_index_means_guard_disabled(self):
+        assert eval_movie(make_movie())[0] == "candidate"
+
+    def test_recently_watched_series_skipped(self):
+        category, _ = scan.evaluate_series(
+            make_series(), CFG, PATH_MAP, now=NOW, path_exists=EXISTS,
+            watch_index=self._index(tv_days_ago=10),
+        )
+        assert category == "watched"
+
+    def test_guard_days_configurable(self):
+        cfg = dict(CFG, WATCHED_GUARD_DAYS="20")
+        category, _ = scan.evaluate_movie(
+            make_movie(), cfg, PATH_MAP, now=NOW, path_exists=EXISTS,
+            watch_index=self._index(movie_days_ago=30),
+        )
+        assert category == "candidate"  # 30d ago is outside a 20d guard
+
+    def test_kids_and_protected_still_win_over_watch_history(self):
+        # The guard only ever REMOVES candidates; an unwatched kids
+        # or protected item is still excluded.
+        movie = make_movie(path="/kids/Some Cartoon (2010)")
+        category, _ = scan.evaluate_movie(
+            movie, CFG, PATH_MAP, now=NOW, path_exists=EXISTS,
+            watch_index={"movie": {}, "tv": {}},
+        )
+        assert category == "kids"
+
+    def test_last_played_days_math(self):
+        idx = self._index(movie_days_ago=45)
+        assert scan.last_played_days(idx, "movie", "Some Obscure Drama", 0, NOW) == 45
+        assert scan.last_played_days(idx, "movie", "Unknown Movie", 0, NOW) is None
+        assert scan.last_played_days(None, "movie", "Anything", 0, NOW) is None
+
+
+class TestTautulliApi:
+    def test_success_returns_data(self):
+        cfg = {"TAUTULLI_URL": "http://tautulli:8181", "TAUTULLI_API_KEY": "tkey"}
+        body = json.dumps(
+            {"response": {"result": "success", "data": [{"section_id": 1}]}}
+        ).encode()
+        fake = mock.MagicMock()
+        fake.__enter__.return_value = io.BytesIO(body)
+        with mock.patch.object(scan.urllib.request, "urlopen", return_value=fake) as m:
+            data = scan.tautulli_api(cfg, "get_libraries")
+        assert data == [{"section_id": 1}]
+        url = m.call_args[0][0]
+        assert url.startswith("http://tautulli:8181/api/v2?")
+        assert "apikey=tkey" in url and "cmd=get_libraries" in url
+
+    def test_error_result_returns_none(self):
+        cfg = {"TAUTULLI_URL": "http://tautulli:8181", "TAUTULLI_API_KEY": "tkey"}
+        body = json.dumps({"response": {"result": "error"}}).encode()
+        fake = mock.MagicMock()
+        fake.__enter__.return_value = io.BytesIO(body)
+        with mock.patch.object(scan.urllib.request, "urlopen", return_value=fake):
+            assert scan.tautulli_api(cfg, "get_libraries") is None
+
+    def test_network_failure_returns_none(self):
+        cfg = {"TAUTULLI_URL": "http://tautulli:8181", "TAUTULLI_API_KEY": "tkey"}
+        err = urllib.error.URLError("no route")
+        with mock.patch.object(scan.urllib.request, "urlopen", side_effect=err):
+            assert scan.tautulli_api(cfg, "get_libraries") is None
+
+
+class TestFetchWatchIndex:
+    CFG_T = {"TAUTULLI_URL": "http://t:8181", "TAUTULLI_API_KEY": "k"}
+
+    def test_builds_movie_and_tv_indexes(self):
+        def fake_api(cfg, cmd, **params):
+            if cmd == "get_libraries":
+                return [
+                    {"section_id": 1, "section_type": "movie"},
+                    {"section_id": 2, "section_type": "show"},
+                    {"section_id": 3, "section_type": "artist"},  # ignored
+                ]
+            if params.get("section_id") == 1:
+                return {"data": [
+                    {"title": "Heat", "year": 1995, "last_played": 1000},
+                    {"title": "Never Played", "year": 2000, "last_played": None},
+                ]}
+            return {"data": [{"title": "The Wire", "last_played": 2000}]}
+
+        with mock.patch.object(scan, "tautulli_api", side_effect=fake_api):
+            index = scan.fetch_watch_index(self.CFG_T)
+
+        assert index == {"movie": {("heat", 1995): 1000}, "tv": {"the wire": 2000}}
+
+    def test_unreachable_tautulli_returns_none(self):
+        with mock.patch.object(scan, "tautulli_api", return_value=None):
+            assert scan.fetch_watch_index(self.CFG_T) is None
+
+
 class TestNotify:
     def test_noop_when_unconfigured(self):
         with mock.patch.object(scan.urllib.request, "urlopen") as m:

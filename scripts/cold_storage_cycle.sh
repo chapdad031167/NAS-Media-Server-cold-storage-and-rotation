@@ -1,10 +1,20 @@
 #!/bin/bash
 # ============================================================
-# cold_storage_cycle.sh v2.3
+# cold_storage_cycle.sh v2.4
 # Reads the candidate JSON produced by cold_storage_scan.py and
 # moves each candidate to cold storage.
 #   Movies -> $COLD_ROOT/Movies/
 #   TV     -> $COLD_ROOT/TV Shows/
+#
+# Changes in v2.4:
+#   - ARCHIVED MEDIA STAYS VISIBLE: with UPDATE_ARR_PATHS=true,
+#     the item's path in Radarr/Sonarr is updated to its cold
+#     storage location (moveFiles=false - we already moved it)
+#     instead of being orphaned. Add $COLD_ROOT/Movies and
+#     "$COLD_ROOT/TV Shows" as root folders in Radarr/Sonarr
+#     first, and optionally as an "Archive" library in Plex, so
+#     archived media stays browsable and playable. Items are
+#     still unmonitored either way so nothing re-downloads.
 #
 # Changes in v2.3:
 #   - ARCHIVE MANIFEST: every verified move appends a JSON line
@@ -82,6 +92,10 @@ fi
 
 # Unmonitor moved items in Radarr/Sonarr (recommended: true)
 UNMONITOR="${UNMONITOR:-true}"
+# Also update the item's Radarr/Sonarr path to the cold storage
+# location so it stays visible (requires the cold folders to be
+# configured as root folders in Radarr/Sonarr)
+UPDATE_ARR_PATHS="${UPDATE_ARR_PATHS:-false}"
 RADARR_URL="${RADARR_URL:-http://localhost:7878}"
 RADARR_API_KEY="${RADARR_API_KEY:-}"
 SONARR_URL="${SONARR_URL:-http://localhost:8989}"
@@ -131,11 +145,11 @@ notify() {
     fi
 }
 
-# append_manifest EVENT TYPE ID NAME SRC DEST BYTES
+# append_manifest EVENT TYPE ID NAME SRC DEST BYTES [ARR_PATH_UPDATED]
 # One JSON line per event; the manifest lives on the cold drive
 # so it travels with the archive.
 append_manifest() {
-    python3 - "$MANIFEST_FILE" "$1" "$2" "$3" "$4" "$5" "$6" "$7" <<'PYEOF'
+    python3 - "$MANIFEST_FILE" "$1" "$2" "$3" "$4" "$5" "$6" "$7" "${8:-false}" <<'PYEOF'
 import datetime, json, sys
 entry = {
     "event": sys.argv[2],
@@ -146,6 +160,7 @@ entry = {
     "src": sys.argv[6],
     "dest": sys.argv[7],
     "size_bytes": int(sys.argv[8] or 0),
+    "arr_path_updated": sys.argv[9] == "true",
 }
 with open(sys.argv[1], "a") as f:
     f.write(json.dumps(entry) + "\n")
@@ -182,9 +197,10 @@ if ! command -v rsync >/dev/null 2>&1; then
 fi
 
 log "=============================="
-log "  cold_storage_cycle.sh v2.2"
+log "  cold_storage_cycle.sh v2.4"
 log "  DRY_RUN: $DRY_RUN"
 log "  UNMONITOR: $UNMONITOR"
+log "  UPDATE_ARR_PATHS: $UPDATE_ARR_PATHS"
 log "  Source file: $CANDIDATE_FILE"
 log "  Dest (movies): $COLD_MOVIES"
 log "  Dest (TV):     $COLD_TV"
@@ -233,11 +249,15 @@ if (( POOL_TARGET_PCT > 0 )); then
     fi
 fi
 
-# --- UNMONITOR HELPER (v2) -----------------------------------
-# unmonitor_item TYPE ID  -> sets monitored=false in Radarr/Sonarr
+# --- UNMONITOR / PATH-UPDATE HELPER (v2, v2.4) ----------------
+# unmonitor_item TYPE ID [NEW_PATH]
+# Sets monitored=false in Radarr/Sonarr; with NEW_PATH also
+# repoints the item at its cold storage location (moveFiles=false
+# because we already moved the files ourselves).
 unmonitor_item() {
     local ITEM_TYPE="$1"
     local ITEM_ID="$2"
+    local NEW_PATH="${3:-}"
 
     if [[ -z "$ITEM_ID" || "$ITEM_ID" == "None" || "$ITEM_ID" == "null" ]]; then
         log "             UNMONITOR: skipped (no id in candidate JSON - rerun scan v2.1+)"
@@ -259,9 +279,9 @@ unmonitor_item() {
 
     # The heredoc is python's stdin, which also shields the outer
     # while-read loop's stdin from being consumed.
-    python3 - "$BASE" "$KEY" "$ENDPOINT" "$ITEM_ID" <<'PYEOF'
+    python3 - "$BASE" "$KEY" "$ENDPOINT" "$ITEM_ID" "$NEW_PATH" <<'PYEOF'
 import sys, json, urllib.request
-base, key, endpoint, item_id = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+base, key, endpoint, item_id, new_path = sys.argv[1:6]
 url = f"{base}/api/v3/{endpoint}/{item_id}"
 headers = {"X-Api-Key": key, "Content-Type": "application/json"}
 try:
@@ -269,8 +289,12 @@ try:
     with urllib.request.urlopen(req, timeout=15) as r:
         obj = json.loads(r.read().decode())
     obj["monitored"] = False
+    if new_path:
+        obj["path"] = new_path
     data = json.dumps(obj).encode()
-    req = urllib.request.Request(url, data=data, headers=headers, method="PUT")
+    req = urllib.request.Request(
+        url + "?moveFiles=false", data=data, headers=headers, method="PUT"
+    )
     with urllib.request.urlopen(req, timeout=15) as r:
         r.read()
     sys.exit(0)
@@ -412,15 +436,23 @@ while IFS=$'\t' read -r TYPE SRC_PATH NAME SIZE_BYTES ITEM_ID AGE_DAYS; do
             log "             STATUS: Moved + checksum verified OK"
             ((MOVED_COUNT++))
             SPACE_MOVED=$((SPACE_MOVED + SIZE_BYTES))
-            if append_manifest "archived" "$TYPE" "$ITEM_ID" "$NAME" "$SRC_PATH" "$DEST_PATH" "$SIZE_BYTES"; then
+            ARR_PATH_UPDATED=false
+            if [[ "$UNMONITOR" == true ]]; then
+                if [[ "$UPDATE_ARR_PATHS" == true ]]; then
+                    if unmonitor_item "$TYPE" "$ITEM_ID" "$DEST_PATH"; then
+                        log "             UNMONITOR+PATH: OK ($TYPE id $ITEM_ID now points at cold storage)"
+                        ARR_PATH_UPDATED=true
+                    fi
+                else
+                    if unmonitor_item "$TYPE" "$ITEM_ID"; then
+                        log "             UNMONITOR: OK ($TYPE id $ITEM_ID)"
+                    fi
+                fi
+            fi
+            if append_manifest "archived" "$TYPE" "$ITEM_ID" "$NAME" "$SRC_PATH" "$DEST_PATH" "$SIZE_BYTES" "$ARR_PATH_UPDATED"; then
                 log "             MANIFEST: recorded in $MANIFEST_FILE"
             else
                 log "             MANIFEST: WARNING - could not write $MANIFEST_FILE"
-            fi
-            if [[ "$UNMONITOR" == true ]]; then
-                if unmonitor_item "$TYPE" "$ITEM_ID"; then
-                    log "             UNMONITOR: OK ($TYPE id $ITEM_ID)"
-                fi
             fi
         else
             log "             STATUS: ERROR - move/verify failed, SOURCE KEPT"

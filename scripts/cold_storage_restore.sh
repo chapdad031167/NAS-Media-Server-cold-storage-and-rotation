@@ -178,13 +178,16 @@ try:
 except OSError:
     pass
 if best:
-    print(f"{best.get('type', '')}\t{best.get('id', '')}")
+    updated = "true" if best.get("arr_path_updated") else "false"
+    print(f"{best.get('type', '')}\t{best.get('id', '')}\t{updated}")
 PYEOF
 )
 ITEM_ID=""
+ARR_PATH_UPDATED=false
 if [[ -n "$MANIFEST_META" ]]; then
-    IFS=$'\t' read -r MANIFEST_TYPE ITEM_ID <<<"$MANIFEST_META"
+    IFS=$'\t' read -r MANIFEST_TYPE ITEM_ID ARR_PATH_UPDATED <<<"$MANIFEST_META"
     [[ -n "$MANIFEST_TYPE" ]] && ITEM_TYPE="$MANIFEST_TYPE"
+    ARR_PATH_UPDATED="${ARR_PATH_UPDATED:-false}"
 fi
 
 log "=============================="
@@ -212,12 +215,15 @@ if (( HOT_AVAIL < NEEDED + NEEDED / 20 )); then
     exit 1
 fi
 
-# set_monitored ID MONITORED -> flips the monitored flag in
-# Radarr/Sonarr (same API pattern as the cycle script's
-# unmonitor, with the target value parameterized).
+# set_monitored ID MONITORED [NEW_PATH] -> flips the monitored
+# flag in Radarr/Sonarr (same API pattern as the cycle script's
+# unmonitor). With NEW_PATH the item is also repointed at its
+# restored hot-pool location (moveFiles=false - we already moved
+# the files), reversing an UPDATE_ARR_PATHS=true archive.
 set_monitored() {
     local ITEM_ID="$1"
     local MONITORED="$2"
+    local NEW_PATH="${3:-}"
 
     local BASE KEY ENDPOINT
     if [[ "$ITEM_TYPE" == "movie" ]]; then
@@ -231,9 +237,9 @@ set_monitored() {
         return 1
     fi
 
-    python3 - "$BASE" "$KEY" "$ENDPOINT" "$ITEM_ID" "$MONITORED" <<'PYEOF'
+    python3 - "$BASE" "$KEY" "$ENDPOINT" "$ITEM_ID" "$MONITORED" "$NEW_PATH" <<'PYEOF'
 import sys, json, urllib.request
-base, key, endpoint, item_id, monitored = sys.argv[1:6]
+base, key, endpoint, item_id, monitored, new_path = sys.argv[1:7]
 url = f"{base}/api/v3/{endpoint}/{item_id}"
 headers = {"X-Api-Key": key, "Content-Type": "application/json"}
 try:
@@ -241,8 +247,12 @@ try:
     with urllib.request.urlopen(req, timeout=15) as r:
         obj = json.loads(r.read().decode())
     obj["monitored"] = monitored == "true"
+    if new_path:
+        obj["path"] = new_path
     data = json.dumps(obj).encode()
-    req = urllib.request.Request(url, data=data, headers=headers, method="PUT")
+    req = urllib.request.Request(
+        url + "?moveFiles=false", data=data, headers=headers, method="PUT"
+    )
     with urllib.request.urlopen(req, timeout=15) as r:
         r.read()
     sys.exit(0)
@@ -297,7 +307,13 @@ if move_verified "$SRC_PATH" "$DEST_PATH"; then
     append_manifest "restored" "$ITEM_TYPE" "$ITEM_ID" "$BASENAME" "$SRC_PATH" "$DEST_PATH" "$SIZE_BYTES" \
         || log "MANIFEST: WARNING - could not write $MANIFEST_FILE"
     if [[ -n "$ITEM_ID" ]]; then
-        if set_monitored "$ITEM_ID" "true"; then
+        # If the archive updated the item's path in Radarr/Sonarr,
+        # point it back at the hot pool as we re-monitor.
+        REMONITOR_PATH=""
+        if [[ "$ARR_PATH_UPDATED" == true ]]; then
+            REMONITOR_PATH="$DEST_PATH"
+        fi
+        if set_monitored "$ITEM_ID" "true" "$REMONITOR_PATH"; then
             log "RE-MONITOR: OK ($ITEM_TYPE id $ITEM_ID)"
             log "Radarr/Sonarr will pick the files up on their next library refresh."
         fi

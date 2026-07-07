@@ -8,6 +8,15 @@
 # Read-only: produces a candidate JSON report consumed by
 # cold_storage_cycle.sh. Nothing is moved or deleted here.
 #
+# Changes in v2.4:
+#   - WATCHED GUARD (optional): with Tautulli configured, an
+#     item played within WATCHED_GUARD_DAYS is never archived,
+#     no matter how old its release date is. Release age says
+#     "old"; watch history says "still loved" - the guard lets
+#     the second signal veto the first. Fails open-but-safe: if
+#     Tautulli is unreachable the guard is skipped with a
+#     warning (identical to pre-v2.4 behaviour).
+#
 # Changes in v2.3:
 #   - Protected franchise list moved to protected_franchises.txt
 #     (PROTECTED_LIST_FILE); built-in list kept as fallback.
@@ -33,6 +42,7 @@ import fcntl
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 
 # --- KIDS-CONTENT HARD EXCLUSION (safety rail) ---------------
@@ -90,6 +100,9 @@ DEFAULTS = {
     "LOCK_DIR": "/tmp",
     "NTFY_URL": "",
     "DISCORD_WEBHOOK_URL": "",
+    "TAUTULLI_URL": "",
+    "TAUTULLI_API_KEY": "",
+    "WATCHED_GUARD_DAYS": "180",
 }
 
 
@@ -271,6 +284,87 @@ def parse_added(date_str, now=None):
         return 0
 
 
+def tautulli_api(cfg, cmd, **params):
+    """GET a Tautulli API v2 command. Returns response['data'] or
+    None on any failure."""
+    query = urllib.parse.urlencode(
+        {"apikey": cfg["TAUTULLI_API_KEY"], "cmd": cmd, **params}
+    )
+    url = f"{cfg['TAUTULLI_URL']}/api/v2?{query}"
+    try:
+        with urllib.request.urlopen(url, timeout=15) as r:
+            body = json.loads(r.read().decode())
+        response = body.get("response", {})
+        if response.get("result") != "success":
+            log(f"ERROR: Tautulli API returned {response.get('result')} for {cmd}")
+            return None
+        return response.get("data")
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        log(f"ERROR: Tautulli API call failed ({cmd}): {e}")
+        return None
+
+
+def fetch_watch_index(cfg):
+    """Build a last-played index from Tautulli.
+
+    Returns {"movie": {(title_casefold, year): epoch_seconds},
+             "tv":    {title_casefold: epoch_seconds}}
+    or None when Tautulli can't be queried (guard disabled)."""
+    libraries = tautulli_api(cfg, "get_libraries")
+    if libraries is None:
+        return None
+
+    index = {"movie": {}, "tv": {}}
+    for lib in libraries:
+        section_type = lib.get("section_type", "")
+        if section_type not in ("movie", "show"):
+            continue
+        media = tautulli_api(
+            cfg,
+            "get_library_media_info",
+            section_id=lib.get("section_id"),
+            length=100000,
+        )
+        if media is None:
+            return None
+        for item in media.get("data", []):
+            last_played = item.get("last_played")
+            if not last_played:
+                continue
+            title = (item.get("title") or "").casefold()
+            if not title:
+                continue
+            if section_type == "movie":
+                try:
+                    year = int(item.get("year") or 0)
+                except (TypeError, ValueError):
+                    year = 0
+                key = (title, year)
+                bucket = index["movie"]
+            else:
+                key = title
+                bucket = index["tv"]
+            # Keep the most recent play across duplicate entries
+            bucket[key] = max(bucket.get(key, 0), int(last_played))
+    return index
+
+
+def last_played_days(watch_index, kind, title, year, now=None):
+    """Days since the item was last played, or None if it has no
+    watch history. Movies match on (title, year); TV on title."""
+    if not watch_index:
+        return None
+    if kind == "movie":
+        last_played = watch_index.get("movie", {}).get((title.casefold(), year or 0))
+    else:
+        last_played = watch_index.get("tv", {}).get(title.casefold())
+    if not last_played:
+        return None
+    if now is None:
+        now = datetime.datetime.now(datetime.timezone.utc)
+    return int((now.timestamp() - last_played) // 86400)
+
+
 def get_release_age_days(movie, now=None):
     """TMDB release date fallback chain, then release year, else age 0.
 
@@ -289,13 +383,14 @@ def get_release_age_days(movie, now=None):
     return parse_added(fallback, now) if fallback else 0
 
 
-def evaluate_movie(movie, cfg, path_map, now=None, path_exists=os.path.isdir, protected=None):
+def evaluate_movie(movie, cfg, path_map, now=None, path_exists=os.path.isdir,
+                   protected=None, watch_index=None):
     """Classify one Radarr movie record.
 
     Returns (category, payload) where category is one of:
-      "no_file", "kids", "protected", "size", "age", "not_found",
-      "candidate". Only "candidate" payloads are dicts; the rest
-      are human-readable skip reasons.
+      "no_file", "kids", "protected", "size", "age", "watched",
+      "not_found", "candidate". Only "candidate" payloads are
+      dicts; the rest are human-readable skip reasons.
     """
     title = movie.get("title", "")
     movie_id = movie.get("id")
@@ -329,6 +424,15 @@ def evaluate_movie(movie, cfg, path_map, now=None, path_exists=os.path.isdir, pr
     if age_days < min_age_days:
         return "age", f"{title} ({age_days}d since release)"
 
+    # v2.4 WATCHED GUARD: release age says "old"; watch history
+    # says "still loved". The second signal vetoes the first.
+    if watch_index is not None:
+        played_days = last_played_days(
+            watch_index, "movie", title, movie.get("year", 0), now
+        )
+        if played_days is not None and played_days < int(cfg["WATCHED_GUARD_DAYS"]):
+            return "watched", f"{title} (played {played_days}d ago)"
+
     # v2.1 FIX: existence check on host path (TV had this, movies didn't)
     if not path or not path_exists(path):
         return "not_found", f"{title} (path not found: {path})"
@@ -344,11 +448,13 @@ def evaluate_movie(movie, cfg, path_map, now=None, path_exists=os.path.isdir, pr
     }
 
 
-def evaluate_series(show, cfg, path_map, now=None, path_exists=os.path.isdir, protected=None):
+def evaluate_series(show, cfg, path_map, now=None, path_exists=os.path.isdir,
+                    protected=None, watch_index=None):
     """Classify one Sonarr series record.
 
     Returns (category, payload) where category is one of:
-      "kids", "protected", "status", "age", "not_found", "candidate".
+      "kids", "protected", "status", "age", "watched",
+      "not_found", "candidate".
     """
     title = show.get("title", "")
     series_id = show.get("id")
@@ -380,6 +486,12 @@ def evaluate_series(show, cfg, path_map, now=None, path_exists=os.path.isdir, pr
     if age_days < min_age_days:
         return "age", f"{title} ({age_days}d since last aired)"
 
+    # v2.4 WATCHED GUARD (see evaluate_movie)
+    if watch_index is not None:
+        played_days = last_played_days(watch_index, "tv", title, 0, now)
+        if played_days is not None and played_days < int(cfg["WATCHED_GUARD_DAYS"]):
+            return "watched", f"{title} (played {played_days}d ago)"
+
     if not path or not path_exists(path):
         return "not_found", f"{title} (path not found: {path})"
 
@@ -395,14 +507,17 @@ def evaluate_series(show, cfg, path_map, now=None, path_exists=os.path.isdir, pr
     }
 
 
-def scan_movies(radarr_data, cfg, path_map, now=None, path_exists=os.path.isdir, protected=None):
+def scan_movies(radarr_data, cfg, path_map, now=None, path_exists=os.path.isdir,
+                protected=None, watch_index=None):
     """Run every Radarr record through evaluate_movie, log candidates."""
     buckets = {
         "candidate": [], "kids": [], "protected": [], "size": [],
-        "age": [], "no_file": [], "not_found": [],
+        "age": [], "watched": [], "no_file": [], "not_found": [],
     }
     for movie in radarr_data:
-        category, payload = evaluate_movie(movie, cfg, path_map, now, path_exists, protected)
+        category, payload = evaluate_movie(
+            movie, cfg, path_map, now, path_exists, protected, watch_index
+        )
         buckets[category].append(payload)
         if category == "candidate":
             log(f"  CANDIDATE: {payload['name']}")
@@ -410,14 +525,17 @@ def scan_movies(radarr_data, cfg, path_map, now=None, path_exists=os.path.isdir,
     return buckets
 
 
-def scan_series(sonarr_data, cfg, path_map, now=None, path_exists=os.path.isdir, protected=None):
+def scan_series(sonarr_data, cfg, path_map, now=None, path_exists=os.path.isdir,
+                protected=None, watch_index=None):
     """Run every Sonarr record through evaluate_series, log candidates."""
     buckets = {
         "candidate": [], "kids": [], "protected": [], "status": [],
-        "age": [], "not_found": [],
+        "age": [], "watched": [], "not_found": [],
     }
     for show in sonarr_data:
-        category, payload = evaluate_series(show, cfg, path_map, now, path_exists, protected)
+        category, payload = evaluate_series(
+            show, cfg, path_map, now, path_exists, protected, watch_index
+        )
         buckets[category].append(payload)
         if category == "candidate":
             log(f"  CANDIDATE: {payload['name']}")
@@ -438,10 +556,20 @@ def main():
 
     protected = load_protected(cfg["PROTECTED_LIST_FILE"])
 
+    # v2.4: optional Tautulli watched guard
+    watch_index = None
+    guard_days = int(cfg["WATCHED_GUARD_DAYS"])
+    if cfg["TAUTULLI_URL"] and cfg["TAUTULLI_API_KEY"] and guard_days > 0:
+        watch_index = fetch_watch_index(cfg)
+        if watch_index is None:
+            log("WARNING: Tautulli unreachable - watched guard disabled for this run")
+
     log("=" * 60)
-    log("  cold_storage_scan.py v2.3")
+    log("  cold_storage_scan.py v2.4")
     log(f"  Movie rule: >{cfg['MOVIE_MIN_SIZE_GB']}GB AND >{cfg['MOVIE_MIN_AGE_DAYS']} days (TMDB release)")
     log(f"  TV rule:    Sonarr status=ended AND >{cfg['TV_MIN_AGE_DAYS']} days (lastAired)")
+    if watch_index is not None:
+        log(f"  Watched:    skip if played within {guard_days} days (Tautulli)")
     log("  Kids:       Never (excluded by root folder path)")
     log("=" * 60)
     log("")
@@ -456,7 +584,9 @@ def main():
         if radarr_data is None:
             log("ERROR: Could not reach Radarr. Movie scan skipped.")
         else:
-            m = scan_movies(radarr_data, cfg, path_map, protected=protected)
+            m = scan_movies(
+                radarr_data, cfg, path_map, protected=protected, watch_index=watch_index
+            )
             movie_candidates = m["candidate"]
             log("")
             log(f"  Movie candidates:           {len(m['candidate'])}")
@@ -464,6 +594,7 @@ def main():
             log(f"  Skipped (no file/missing):  {len(m['no_file'])}")
             log(f"  Skipped (under {cfg['MOVIE_MIN_SIZE_GB']}GB):        {len(m['size'])}")
             log(f"  Skipped (under {cfg['MOVIE_MIN_AGE_DAYS']} days):      {len(m['age'])}")
+            log(f"  Skipped (recently watched): {len(m['watched'])}")
             log(f"  Path missing / unknown:     {len(m['not_found'])}")
             log("")
 
@@ -477,13 +608,16 @@ def main():
         if sonarr_data is None:
             log("ERROR: Could not reach Sonarr. TV scan skipped.")
         else:
-            t = scan_series(sonarr_data, cfg, path_map, protected=protected)
+            t = scan_series(
+                sonarr_data, cfg, path_map, protected=protected, watch_index=watch_index
+            )
             tv_candidates = t["candidate"]
             log("")
             log(f"  TV candidates:            {len(t['candidate'])}")
             log(f"  Skipped (protected/kids): {len(t['protected']) + len(t['kids'])}")
             log(f"  Skipped (not ended/no files): {len(t['status'])}")
             log(f"  Skipped (under {cfg['TV_MIN_AGE_DAYS']} days):  {len(t['age'])}")
+            log(f"  Skipped (recently watched): {len(t['watched'])}")
             log(f"  Path missing / unknown:   {len(t['not_found'])}")
             log("")
 
