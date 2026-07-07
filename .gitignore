@@ -1,0 +1,13 @@
+# Real configuration with API keys — never commit
+config.env
+
+# Runtime output
+logs/
+*.log
+cold_storage_candidates.json
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
