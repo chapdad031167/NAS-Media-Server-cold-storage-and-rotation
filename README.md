@@ -29,10 +29,12 @@ weekend." Three specific leaks:
 
 | Script | What it does |
 |---|---|
-| [`scripts/duplicate_cleanup.sh`](scripts/duplicate_cleanup.sh) | Finds movies with multiple video files for the same title **and year**, keeps the largest (highest quality), flags the rest. |
+| [`scripts/duplicate_cleanup.sh`](scripts/duplicate_cleanup.sh) | Finds movies with multiple video files for the same title **and year** (including a `.mkv`/`.mp4` pair), keeps the largest (highest quality), flags the rest. |
 | [`scripts/torrent_cleanup.sh`](scripts/torrent_cleanup.sh) | Compares the torrent download folders against the media library; deletes only confirmed-imported items. Unmatched and still-downloading items are never touched. |
-| [`scripts/cold_storage_scan.py`](scripts/cold_storage_scan.py) | Read-only scanner. Queries Radarr (movies) and Sonarr (TV) and writes a JSON candidate list of media eligible for cold storage. Nothing is moved here. |
-| [`scripts/cold_storage_cycle.sh`](scripts/cold_storage_cycle.sh) | Consumes the candidate JSON and moves each item to the USB archive with rsync copy → checksum verify → delete source, then unmonitors it in Radarr/Sonarr so it isn't re-downloaded. |
+| [`scripts/torrent_cleanup_api.py`](scripts/torrent_cleanup_api.py) | The safer successor: removes finished torrents **through the qBittorrent Web API** (client state always matches the disk — no broken seeds), and only once the seeding goal (ratio or seed-time) is met *and* the import is confirmed. |
+| [`scripts/cold_storage_scan.py`](scripts/cold_storage_scan.py) | Read-only scanner. Queries Radarr (movies) and Sonarr (TV) — and optionally Tautulli watch history — and writes a JSON candidate list of media eligible for cold storage. Nothing is moved here. |
+| [`scripts/cold_storage_cycle.sh`](scripts/cold_storage_cycle.sh) | Consumes the candidate JSON and moves each item to the USB archive with rsync copy → checksum verify → delete source, records it in the archive manifest, then unmonitors it in Radarr/Sonarr (optionally repointing its path so it stays visible). Can archive oldest-first until a pool-capacity target is met. |
+| [`scripts/cold_storage_restore.sh`](scripts/cold_storage_restore.sh) | The way back: verified move from the archive to the hot pool, re-monitored in Radarr/Sonarr via the manifest. Cold storage is a rotation, not a one-way trip. |
 
 See [docs/architecture.md](docs/architecture.md) for the decision rules and
 the full operational flow.
@@ -59,6 +61,17 @@ first:
   deleting only ever happens when a human passes `--run`.
 - **Free-space preflight.** The cycle aborts before touching anything if the
   archive drive can't hold the whole candidate set plus 5% headroom.
+- **Watched guard (optional).** With Tautulli configured, anything played
+  within `WATCHED_GUARD_DAYS` (default 180) is never archived — release age
+  says "old", watch history says "still loved", and the second signal wins.
+- **Staleness guard.** The cycle refuses to `--run` from a candidate
+  snapshot older than `CANDIDATE_MAX_AGE_DAYS` (default 7), and skips any
+  item whose on-disk size grew >20% since the scan (quality-upgrade signal).
+- **Lock files.** Every script takes an exclusive `flock`, so an overlapping
+  cron run can't walk the same file tree twice.
+- **Archive manifest.** Every verified move or restore appends a JSON line
+  to a manifest that lives on the cold drive itself — a searchable index of
+  what's archived, where it came from, and its Radarr/Sonarr id.
 
 ## Setup
 
@@ -76,12 +89,21 @@ vi config.env   # fill in NAS paths, Radarr/Sonarr URLs and API keys
 # Everything defaults to dry run — safe to try immediately
 bash scripts/duplicate_cleanup.sh
 bash scripts/torrent_cleanup.sh
+python3 scripts/torrent_cleanup_api.py
 python3 scripts/cold_storage_scan.py
 bash scripts/cold_storage_cycle.sh
+bash scripts/cold_storage_restore.sh            # list what's archived
 
 # When (and only when) the dry-run report looks right:
 bash scripts/duplicate_cleanup.sh --run
+bash scripts/cold_storage_restore.sh "heat" --run   # bring one back
 ```
+
+Optional integrations, all off by default (see `config.env.example`):
+Tautulli watched guard (`TAUTULLI_URL` + `TAUTULLI_API_KEY`), push
+notifications (`NTFY_URL` / `DISCORD_WEBHOOK_URL`), capacity-target
+archiving (`POOL_TARGET_PCT`), and archived-media visibility
+(`UPDATE_ARR_PATHS` — see [docs/architecture.md](docs/architecture.md)).
 
 Typical cron setup (scan automatically, execute manually):
 
