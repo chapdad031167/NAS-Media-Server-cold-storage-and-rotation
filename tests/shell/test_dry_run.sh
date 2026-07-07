@@ -26,6 +26,7 @@ trap 'rm -rf "$WORK"' EXIT
 export CONFIG_FILE="$WORK/config.env"
 touch "$CONFIG_FILE"
 export LOG_DIR="$WORK/logs"
+export LOCK_DIR="$WORK"
 
 PASS=0
 FAIL=0
@@ -49,20 +50,37 @@ mkfile() { # mkfile <path> <size>
 # --- duplicate_cleanup.sh -----------------------------------
 echo "=== duplicate_cleanup.sh ==="
 export MOVIES_DIR="$WORK/Movies"
-# Same container on both copies: the group key keeps the file
-# extension, so a .mkv and a .mp4 of the same film do not group.
+# v1.4: the group key strips the extension, so a .mkv and an
+# .mp4 of the same film ARE duplicates of each other now.
 mkfile "$MOVIES_DIR/Heat (1995)/Heat.1995.1080p.mkv" 4096
-mkfile "$MOVIES_DIR/Heat (1995)/Heat.1995.720p.mkv" 1024
+mkfile "$MOVIES_DIR/Heat (1995)/Heat.1995.720p.mp4" 1024
 mkfile "$MOVIES_DIR/Halloween (1978)/Halloween.1978.1080p.mkv" 2048
 mkfile "$MOVIES_DIR/Halloween (2007)/Halloween.2007.1080p.mkv" 2048
 
+# Log retention: logs older than LOG_RETENTION_DAYS are pruned
+mkdir -p "$LOG_DIR"
+touch -d "100 days ago" "$LOG_DIR/ancient_run.log"
+touch "$LOG_DIR/recent_run.log"
+
+# Locking: a held lock must refuse a second instance
+exec 8>"$LOCK_DIR/nas_media_duplicate_cleanup.lock"
+flock -n 8
+if bash "$SCRIPTS/duplicate_cleanup.sh" >/dev/null 2>&1; then
+    check "concurrent run refused while lock held" false
+else
+    check "concurrent run refused while lock held" true
+fi
+exec 8>&-
+
 OUT=$(bash "$SCRIPTS/duplicate_cleanup.sh")
 check "dry run is the default" grep -q "DRY_RUN: true" <<<"$OUT"
-check "dry run deletes nothing" test -f "$MOVIES_DIR/Heat (1995)/Heat.1995.720p.mkv"
-check "duplicate group detected" grep -q -- "--- Duplicate group:" <<<"$OUT"
+check "dry run deletes nothing" test -f "$MOVIES_DIR/Heat (1995)/Heat.1995.720p.mp4"
+check "cross-container duplicate group detected" grep -q -- "--- Duplicate group:" <<<"$OUT"
+check "old log pruned" test ! -f "$LOG_DIR/ancient_run.log"
+check "recent log kept" test -f "$LOG_DIR/recent_run.log"
 
 OUT=$(bash "$SCRIPTS/duplicate_cleanup.sh" --run)
-check "--run deletes the smaller duplicate" test ! -f "$MOVIES_DIR/Heat (1995)/Heat.1995.720p.mkv"
+check "--run deletes the smaller duplicate (mp4 vs mkv)" test ! -f "$MOVIES_DIR/Heat (1995)/Heat.1995.720p.mp4"
 check "--run keeps the larger duplicate" test -f "$MOVIES_DIR/Heat (1995)/Heat.1995.1080p.mkv"
 check "Halloween 1978 kept (year in group key)" test -f "$MOVIES_DIR/Halloween (1978)/Halloween.1978.1080p.mkv"
 check "Halloween 2007 kept (year in group key)" test -f "$MOVIES_DIR/Halloween (2007)/Halloween.2007.1080p.mkv"
@@ -94,10 +112,12 @@ export CANDIDATE_FILE="$WORK/candidates.json"
 mkdir -p "$COLD_ROOT"
 mkfile "$MOVIES_DIR/Old Drama (2010)/Old.Drama.2010.1080p.mkv" 8192
 SRC="$MOVIES_DIR/Old Drama (2010)"
-python3 - "$CANDIDATE_FILE" "$SRC" <<'PYEOF'
-import json, os, sys
-size = sum(os.path.getsize(os.path.join(r, f))
-           for r, _, fs in os.walk(sys.argv[2]) for f in fs)
+# Record the size the same way the cycle script re-measures it
+# (du -sb), so the size re-verify guard sees a clean baseline.
+SRC_BYTES=$(du -sb "$SRC" | cut -f1)
+python3 - "$CANDIDATE_FILE" "$SRC" "$SRC_BYTES" <<'PYEOF'
+import json, sys
+size = int(sys.argv[3])
 json.dump({
     "total_size_bytes": size,
     "candidates": [{
@@ -111,6 +131,26 @@ OUT=$(bash "$SCRIPTS/cold_storage_cycle.sh")
 check "dry run is the default" grep -q "DRY_RUN: true" <<<"$OUT"
 check "dry run moves nothing" test -d "$SRC"
 check "dry run creates nothing in cold storage" test ! -e "$COLD_ROOT/Movies/Old Drama (2010)"
+
+# Staleness guard: an old candidate file warns on dry run and
+# hard-refuses --run
+touch -d "10 days ago" "$CANDIDATE_FILE"
+OUT=$(bash "$SCRIPTS/cold_storage_cycle.sh")
+check "stale candidates warn on dry run" grep -q "WARNING: Candidate file is" <<<"$OUT"
+if bash "$SCRIPTS/cold_storage_cycle.sh" --run >/dev/null 2>&1; then
+    check "stale candidates refuse --run" false
+else
+    check "stale candidates refuse --run" true
+fi
+check "stale refusal moved nothing" test -d "$SRC"
+touch "$CANDIDATE_FILE"
+
+# Size re-verify: source that grew >20% since the scan is skipped
+mkfile "$SRC/extras.bonus.mkv" 65536
+OUT=$(bash "$SCRIPTS/cold_storage_cycle.sh" --run)
+check "grown source skipped" grep -q "Source grew since scan" <<<"$OUT"
+check "grown source kept on disk" test -d "$SRC"
+rm -f "$SRC/extras.bonus.mkv"
 
 OUT=$(bash "$SCRIPTS/cold_storage_cycle.sh" --run)
 check "--run moves source to cold storage" test ! -e "$SRC"

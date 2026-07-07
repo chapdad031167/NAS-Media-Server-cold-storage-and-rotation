@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# torrent_cleanup.sh v1.2
+# torrent_cleanup.sh v1.3
 # Compares $TORRENT_MOVIES_DIR and $TORRENT_TV_DIR against the
 # media library. Deletes confirmed-imported items.
 #
@@ -8,6 +8,10 @@
 #   IMPORTED    = match found in media library -> delete
 #   UNMATCHED   = no match found -> report only, never touched
 #   DOWNLOADING = contains .!qB files -> skipped, never touched
+#
+# Fixes in v1.3:
+#   - flock lock file prevents overlapping runs.
+#   - Old logs pruned after LOG_RETENTION_DAYS (default 90).
 #
 # Fixes in v1.2:
 #   - Hardcoded paths moved to config.env / environment.
@@ -43,13 +47,24 @@ MEDIA_MOVIES="${MOVIES_DIR:-/volume1/Movies}"
 MEDIA_TV="${TV_DIR:-/volume1/TV Shows}"
 LOG_DIR="${LOG_DIR:-$SCRIPT_DIR/../logs}"
 LOG_FILE="$LOG_DIR/torrent_cleanup_$(date +%Y%m%d_%H%M%S).log"
+LOG_RETENTION_DAYS="${LOG_RETENTION_DAYS:-90}"
+LOCK_DIR="${LOCK_DIR:-${TMPDIR:-/tmp}}"
 DRY_RUN=true
 
 if [[ "$1" == "--run" ]]; then
     DRY_RUN=false
 fi
 
+# Refuse to run concurrently (fd 9 holds the lock for the
+# lifetime of the script)
+exec 9>"$LOCK_DIR/nas_media_torrent_cleanup.lock"
+if ! flock -n 9; then
+    echo "ERROR: another torrent_cleanup.sh is already running. Exiting." >&2
+    exit 1
+fi
+
 mkdir -p "$LOG_DIR"
+find "$LOG_DIR" -maxdepth 1 -name '*.log' -mtime +"$LOG_RETENTION_DAYS" -delete 2>/dev/null
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
@@ -95,7 +110,7 @@ while IFS= read -r -d $'\0' folder; do
 done < <(find "$MEDIA_TV" -maxdepth 1 -mindepth 1 -type d -print0)
 
 log "=============================="
-log "  torrent_cleanup.sh v1.2"
+log "  torrent_cleanup.sh v1.3"
 log "  DRY_RUN: $DRY_RUN"
 log "  Movies indexed: ${#MEDIA_MOVIE_MAP[@]} folders"
 log "  TV Shows indexed: ${#MEDIA_TV_MAP[@]} folders"
