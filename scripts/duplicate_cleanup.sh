@@ -1,9 +1,16 @@
 #!/bin/bash
 # ============================================================
-# duplicate_cleanup.sh v1.3
+# duplicate_cleanup.sh v1.4
 # Finds duplicate movies in $MOVIES_DIR (same title AND
 # year, multiple files). Keeps the LARGEST file (highest
 # quality), flags the rest for deletion.
+#
+# Fixes in v1.4:
+#   - File extension stripped from the group key, so a .mkv and
+#     an .mp4 of the same movie are now detected as duplicates
+#     (the most common leftover after a quality upgrade).
+#   - flock lock file prevents overlapping runs.
+#   - Old logs pruned after LOG_RETENTION_DAYS (default 90).
 #
 # Fixes in v1.3:
 #   - Hardcoded paths moved to config.env / environment.
@@ -36,20 +43,31 @@ fi
 MOVIES_DIR="${MOVIES_DIR:-/volume1/Movies}"
 LOG_DIR="${LOG_DIR:-$SCRIPT_DIR/../logs}"
 LOG_FILE="$LOG_DIR/duplicate_cleanup_$(date +%Y%m%d_%H%M%S).log"
+LOG_RETENTION_DAYS="${LOG_RETENTION_DAYS:-90}"
+LOCK_DIR="${LOCK_DIR:-${TMPDIR:-/tmp}}"
 DRY_RUN=true
 
 if [[ "$1" == "--run" ]]; then
     DRY_RUN=false
 fi
 
+# Refuse to run concurrently (fd 9 holds the lock for the
+# lifetime of the script)
+exec 9>"$LOCK_DIR/nas_media_duplicate_cleanup.lock"
+if ! flock -n 9; then
+    echo "ERROR: another duplicate_cleanup.sh is already running. Exiting." >&2
+    exit 1
+fi
+
 mkdir -p "$LOG_DIR"
+find "$LOG_DIR" -maxdepth 1 -name '*.log' -mtime +"$LOG_RETENTION_DAYS" -delete 2>/dev/null
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
 }
 
 log "=============================="
-log "  duplicate_cleanup.sh v1.3"
+log "  duplicate_cleanup.sh v1.4"
 log "  DRY_RUN: $DRY_RUN"
 log "  Target: $MOVIES_DIR"
 log "=============================="
@@ -77,6 +95,8 @@ log ""
 
 normalize_title() {
     local str="$1"
+    # v1.4 FIX: drop the extension so .mkv/.mp4 copies group together
+    str="${str%.*}"
     str="${str,,}"
     str=$(echo "$str" | sed -E \
         's/\b(2160p|1080p|1080i|720p|480p|4k|uhd|hdr|hdr10|dv|bluray|blu-ray|bdrip|brrip|web-dl|webdl|webrip|web|hdtv|dvdrip|dvd|xvid|x264|x265|h264|h265|hevc|avc|aac|ac3|dts|truehd|atmos|remux|proper|repack|extended|theatrical|directors|unrated|remastered)\b//gI')

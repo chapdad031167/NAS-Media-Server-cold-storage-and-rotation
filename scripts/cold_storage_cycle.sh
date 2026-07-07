@@ -1,10 +1,19 @@
 #!/bin/bash
 # ============================================================
-# cold_storage_cycle.sh v2.1
+# cold_storage_cycle.sh v2.2
 # Reads the candidate JSON produced by cold_storage_scan.py and
 # moves each candidate to cold storage.
 #   Movies -> $COLD_ROOT/Movies/
 #   TV     -> $COLD_ROOT/TV Shows/
+#
+# Changes in v2.2:
+#   - STALENESS GUARD: refuses to --run from a candidate file
+#     older than CANDIDATE_MAX_AGE_DAYS (default 7); dry runs
+#     warn instead. The library changes; old scans lie.
+#   - SIZE RE-VERIFY: an item whose on-disk size grew >20% since
+#     the scan (quality upgrade?) is skipped - rerun the scan.
+#   - flock lock file prevents overlapping runs.
+#   - Old logs pruned after LOG_RETENTION_DAYS (default 90).
 #
 # Changes in v2.1:
 #   - Secrets/paths moved to config.env / environment.
@@ -44,6 +53,9 @@ COLD_MOVIES="$COLD_ROOT/Movies"
 COLD_TV="$COLD_ROOT/TV Shows"
 LOG_DIR="${LOG_DIR:-$SCRIPT_DIR/../logs}"
 LOG_FILE="$LOG_DIR/cold_storage_cycle_$(date +%Y%m%d_%H%M%S).log"
+LOG_RETENTION_DAYS="${LOG_RETENTION_DAYS:-90}"
+LOCK_DIR="${LOCK_DIR:-${TMPDIR:-/tmp}}"
+CANDIDATE_MAX_AGE_DAYS="${CANDIDATE_MAX_AGE_DAYS:-7}"
 DRY_RUN=true
 
 # Unmonitor moved items in Radarr/Sonarr (recommended: true)
@@ -64,7 +76,17 @@ if [[ "$1" == "--run" ]]; then
     DRY_RUN=false
 fi
 
+# Refuse to run concurrently (fd 9 holds the lock for the
+# lifetime of the script) - a cycle can run for hours and a
+# second instance walking the same candidate list would collide.
+exec 9>"$LOCK_DIR/nas_media_cold_storage_cycle.lock"
+if ! flock -n 9; then
+    echo "ERROR: another cold_storage_cycle.sh is already running. Exiting." >&2
+    exit 1
+fi
+
 mkdir -p "$LOG_DIR"
+find "$LOG_DIR" -maxdepth 1 -name '*.log' -mtime +"$LOG_RETENTION_DAYS" -delete 2>/dev/null
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
@@ -76,13 +98,29 @@ if [[ ! -f "$CANDIDATE_FILE" ]]; then
     exit 1
 fi
 
+# --- STALENESS GUARD (v2.2) ----------------------------------
+# The candidate list is a snapshot; the library keeps changing
+# underneath it (upgrades, deletions, new downloads). Refuse to
+# execute from an old snapshot.
+CAND_AGE_DAYS=$(( ( $(date +%s) - $(stat -c %Y "$CANDIDATE_FILE") ) / 86400 ))
+if (( CAND_AGE_DAYS > CANDIDATE_MAX_AGE_DAYS )); then
+    if [[ "$DRY_RUN" == false ]]; then
+        log "ERROR: Candidate file is $CAND_AGE_DAYS days old (max: $CANDIDATE_MAX_AGE_DAYS)."
+        log "Rerun cold_storage_scan.py to get a fresh snapshot before --run."
+        exit 1
+    else
+        log "WARNING: Candidate file is $CAND_AGE_DAYS days old (max: $CANDIDATE_MAX_AGE_DAYS)."
+        log "         This dry run may not reflect the current library. Rerun the scan."
+    fi
+fi
+
 if ! command -v rsync >/dev/null 2>&1; then
     log "ERROR: rsync not found. Install rsync or fall back to v1 (not recommended)."
     exit 1
 fi
 
 log "=============================="
-log "  cold_storage_cycle.sh v2.1"
+log "  cold_storage_cycle.sh v2.2"
 log "  DRY_RUN: $DRY_RUN"
 log "  UNMONITOR: $UNMONITOR"
 log "  Source file: $CANDIDATE_FILE"
@@ -246,6 +284,19 @@ while IFS=$'\t' read -r TYPE SRC_PATH NAME SIZE_BYTES ITEM_ID; do
     if [[ ! -e "$SRC_PATH" ]]; then
         log "[$CURRENT/$TOTAL_ITEMS] SKIP: $NAME"
         log "             Source no longer exists: $SRC_PATH"
+        ((ERROR_COUNT++))
+        continue
+    fi
+
+    # v2.2 SIZE RE-VERIFY: if the item grew >20% since the scan,
+    # it was probably quality-upgraded - the snapshot is wrong
+    # for this item. Skip it; a fresh scan will re-evaluate.
+    CUR_BYTES=$(du -sb "$SRC_PATH" 2>/dev/null | cut -f1)
+    CUR_BYTES=${CUR_BYTES:-0}
+    if (( SIZE_BYTES > 0 && CUR_BYTES > SIZE_BYTES + SIZE_BYTES / 5 )); then
+        log "[$CURRENT/$TOTAL_ITEMS] SKIP: $NAME"
+        log "             Source grew since scan ($SIZE_BYTES -> $CUR_BYTES bytes, quality upgrade?)"
+        log "             Rerun cold_storage_scan.py to re-evaluate this item."
         ((ERROR_COUNT++))
         continue
     fi

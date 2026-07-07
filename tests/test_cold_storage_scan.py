@@ -8,6 +8,7 @@ filesystem layout is required either.
 import datetime
 import io
 import json
+import os
 import urllib.error
 from unittest import mock
 
@@ -327,6 +328,73 @@ class TestConfig:
         cfg = scan.load_config(config_path="/nonexistent/config.env", environ={})
         assert cfg["MOVIE_MIN_SIZE_GB"] == "2"
         assert cfg["RADARR_API_KEY"] == ""
+
+
+# --- Stage 1 additions ----------------------------------------------------
+
+
+class TestProtectedListFile:
+    def test_load_protected_from_file(self, tmp_path):
+        f = tmp_path / "protected.txt"
+        f.write_text("# my list\n\nstar wars\nMy Custom Franchise\n")
+        assert scan.load_protected(str(f)) == ["star wars", "my custom franchise"]
+
+    def test_missing_file_falls_back_to_builtin(self):
+        assert scan.load_protected("/nonexistent/protected.txt") == scan.PROTECTED
+
+    def test_empty_file_falls_back_to_builtin(self, tmp_path):
+        f = tmp_path / "protected.txt"
+        f.write_text("# only comments\n\n")
+        assert scan.load_protected(str(f)) == scan.PROTECTED
+
+    def test_repo_file_matches_builtin_list(self):
+        # The shipped protected_franchises.txt is the same list as
+        # the built-in fallback - they must not drift apart.
+        repo_file = scan.DEFAULTS["PROTECTED_LIST_FILE"]
+        assert scan.load_protected(repo_file) == scan.PROTECTED
+
+    def test_custom_list_threads_through_evaluation(self):
+        movie = make_movie(title="My Custom Franchise: The Reckoning")
+        assert eval_movie(movie)[0] == "candidate"  # not protected by default
+        category, _ = scan.evaluate_movie(
+            movie, CFG, PATH_MAP, now=NOW, path_exists=EXISTS,
+            protected=["my custom franchise"],
+        )
+        assert category == "protected"
+
+
+class TestLogPruning:
+    def test_prunes_only_old_log_files(self, tmp_path):
+        now = 2_000_000_000
+        old_log = tmp_path / "run_old.log"
+        new_log = tmp_path / "run_new.log"
+        old_txt = tmp_path / "notes.txt"
+        for p in (old_log, new_log, old_txt):
+            p.write_text("x")
+        os.utime(old_log, (now - 100 * 86400, now - 100 * 86400))
+        os.utime(old_txt, (now - 100 * 86400, now - 100 * 86400))
+        os.utime(new_log, (now - 86400, now - 86400))
+
+        removed = scan.prune_old_logs(str(tmp_path), 90, now=now)
+
+        assert removed == 1
+        assert not old_log.exists()
+        assert new_log.exists()
+        assert old_txt.exists()  # only *.log files are pruned
+
+    def test_missing_dir_is_a_noop(self):
+        assert scan.prune_old_logs("/nonexistent/logs", 90, now=2_000_000_000) == 0
+
+
+class TestLocking:
+    def test_second_lock_refused_then_released(self, tmp_path):
+        lock_path = str(tmp_path / "scan.lock")
+        first = scan.acquire_lock(lock_path)
+        with pytest.raises(SystemExit):
+            scan.acquire_lock(lock_path)
+        first.close()
+        second = scan.acquire_lock(lock_path)  # released -> reusable
+        second.close()
 
 
 # --- API layer (mocked, no network) --------------------------------------
