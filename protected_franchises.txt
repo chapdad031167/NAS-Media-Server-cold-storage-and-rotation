@@ -1,0 +1,82 @@
+# Protected franchises: one case-insensitive substring per line.
+# Titles matching any entry are NEVER moved to cold storage,
+# regardless of age or size. Lines starting with # are comments.
+#
+# Matching is deliberately loose (substring, not word-boundary):
+# a false KEEP costs a few GB of hot storage, a false ARCHIVE
+# costs a family argument.
+star wars
+rogue one
+solo
+andor
+star trek
+lord of the rings
+hobbit
+rohirrim
+avengers
+spider-man
+spider man
+iron man
+captain america
+thor
+black panther
+black widow
+doctor strange
+guardians of the galaxy
+ant-man
+deadpool
+x-men
+x men
+fantastic four
+eternals
+batman
+superman
+wonder woman
+aquaman
+justice league
+birds of prey
+dark knight
+joker
+shazam
+flash
+halloween
+nightmare on elm street
+friday the 13th
+saw
+chucky
+child's play
+childs play
+scream
+conjuring
+annabelle
+terrifier
+sinister
+insidious
+alien
+predator
+terminator
+matrix
+planet of the apes
+godzilla
+kong
+jurassic
+transformers
+pacific rim
+blade runner
+robocop
+avatar
+serenity
+starship troopers
+independence day
+total recall
+james bond
+harry potter
+fantastic beasts
+jedi
+man of steel
+suicide squad
+watchmen
+schitt's creek
+the expanse
+handmaid
+the continental
