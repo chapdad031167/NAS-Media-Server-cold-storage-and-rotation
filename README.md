@@ -78,10 +78,33 @@ first:
 Requirements: bash 4+, Python 3.8+ (stdlib only), rsync, and Radarr/Sonarr v3
 API access.
 
+### Quick install (on the NAS)
+
 ```bash
 git clone https://github.com/chapdad031167/NAS-Media-Server-cold-storage-and-rotation.git
 cd NAS-Media-Server-cold-storage-and-rotation
+bash install.sh
+```
 
+The installer checks prerequisites, creates a locked-down (`600`)
+`config.env` from the template — it **never overwrites** an existing one —
+walks you through the core settings (paths, Radarr/Sonarr URLs and API
+keys), syntax-verifies every script, and finishes with a health check.
+Useful variants:
+
+```bash
+bash install.sh --dir /volume1/docker/scripts/nas-media-automation  # install elsewhere
+bash install.sh --yes       # non-interactive: keep placeholders, edit config.env later
+bash install.sh --doctor    # change nothing: re-verify paths + API connectivity anytime
+```
+
+`--doctor` is also the first thing to run when something misbehaves — it
+confirms the library paths exist, the cold drive is mounted, and that
+Radarr/Sonarr (and Tautulli, if configured) actually answer with your keys.
+
+### Manual setup
+
+```bash
 # Create your private config (git-ignored)
 cp config.env.example config.env
 vi config.env   # fill in NAS paths, Radarr/Sonarr URLs and API keys
