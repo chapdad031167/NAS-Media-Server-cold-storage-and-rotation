@@ -14,13 +14,16 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y shellcheck rsync
       - name: bash syntax check
         run: |
-          for f in scripts/*.sh tests/shell/*.sh; do
+          for f in install.sh scripts/*.sh tests/shell/*.sh; do
             bash -n "$f"
           done
       - name: shellcheck
-        run: shellcheck scripts/*.sh tests/shell/*.sh
-      - name: shell integration tests (dry-run safety contract)
-        run: bash tests/shell/test_dry_run.sh
+        run: shellcheck install.sh scripts/*.sh tests/shell/*.sh
+      - name: shell integration tests (dry-run safety contract + installer)
+        run: |
+          for t in tests/shell/test_*.sh; do
+            bash "$t"
+          done
 
   python:
     name: pytest
