@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Setup / usage question
+    url: https://github.com/chapdad031167/NAS-Media-Server-cold-storage-and-rotation/discussions
+    about: For "how do I…" questions, please check README.md and docs/architecture.md first, then open a discussion.
