@@ -1,0 +1,25 @@
+name: Feature request
+description: An idea that would make the pipeline better.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: The setup/situation where the current behavior falls short.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: safety
+    attributes:
+      label: Safety considerations
+      description: >
+        This project is paranoid by design (dry-run defaults, kids-content
+        hard exclusion, verified moves). How does the idea stay inside
+        those rails?
