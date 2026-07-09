@@ -1,0 +1,48 @@
+name: Bug report
+description: Something misbehaved. Dry-run output makes bugs 10x easier to fix.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report! Before posting, please run
+        `bash install.sh --doctor` — it catches most config and
+        connectivity problems, and its output is useful below.
+
+        **Redact your API keys** from anything you paste. The scripts
+        never print keys, but config snippets and URLs can contain them.
+  - type: input
+    id: script
+    attributes:
+      label: Which script?
+      placeholder: e.g. cold_storage_cycle.sh
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened, and what did you expect?
+      description: Include the exact command you ran (was it a dry run or --run?).
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Relevant output
+      description: Dry-run report, log excerpt, or `install.sh --doctor` output. REDACT API KEYS.
+      render: text
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: e.g. Synology DSM 7.2, Radarr 5.x, Sonarr 4.x, qBittorrent 4.6
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I ran `install.sh --doctor` and included anything it flagged
+        - label: I redacted API keys from everything pasted above
+          required: true

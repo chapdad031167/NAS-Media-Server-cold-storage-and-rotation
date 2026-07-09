@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/chapdad031167/NAS-Media-Server-cold-storage-and-rotation/actions/workflows/ci.yml/badge.svg)](https://github.com/chapdad031167/NAS-Media-Server-cold-storage-and-rotation/actions/workflows/ci.yml)
 [![shellcheck](https://img.shields.io/badge/shellcheck-clean-brightgreen)](https://www.shellcheck.net/)
+[![Release](https://img.shields.io/github/v/release/chapdad031167/NAS-Media-Server-cold-storage-and-rotation?include_prereleases)](https://github.com/chapdad031167/NAS-Media-Server-cold-storage-and-rotation/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Automation scripts for a home NAS media server running Plex, Sonarr, Radarr,
@@ -9,6 +10,15 @@ and qBittorrent. Duplicate detection, torrent folder cleanup after seeding,
 and a **cold storage pipeline** that identifies aged media via the Radarr and
 Sonarr APIs and rotates it to a USB archive drive with checksum-verified
 moves.
+
+> ⚠️ **Disclaimer — these scripts delete and move data.** Every destructive
+> operation defaults to a dry run and requires an explicit `--run`, moves are
+> checksum-verified before any source is deleted, and the design is
+> deliberately paranoid — but this is a home-lab project under the MIT
+> license, provided **as is, with no warranty**. Read the dry-run report
+> before every `--run`, keep backups of anything irreplaceable, and treat
+> your first live run as a supervised test on expendable media. See the
+> [compatibility notes](#compatibility) for what has and hasn't been tested.
 
 ## The problem
 
@@ -72,6 +82,17 @@ first:
 - **Archive manifest.** Every verified move or restore appends a JSON line
   to a manifest that lives on the cold drive itself — a searchable index of
   what's archived, where it came from, and its Radarr/Sonarr id.
+
+## Compatibility
+
+Honest accounting of what's verified where:
+
+| Layer | Status |
+|---|---|
+| Unit + integration tests | ✅ Every commit, in CI: Ubuntu latest, bash 5.x, Python 3.11, shellcheck. All API interactions are mocked — tests never touch a live server. |
+| Author's production NAS | ✅ Synology DSM, Radarr + Sonarr + qBittorrent + Plex — the core pipeline (scan, cycle, duplicate and torrent cleanup) grew out of scripts running there. |
+| Live API round-trips for the newer opt-ins | ⚠️ `UPDATE_ARR_PATHS`, the Tautulli watched guard, `torrent_cleanup_api.py`, and restore's re-monitor are built against the documented v3/v2 API shapes and fully unit-tested, but young in live use. Run `install.sh --doctor` first and supervise your first live run. |
+| Other platforms (QNAP, TrueNAS, unRAID, generic Linux) | ❓ Should work anywhere with GNU coreutils, bash 4+, python3 ≥3.8, rsync, and flock — but not systematically tested. BusyBox-only userlands may lack `find -printf` / `du -sb`. Reports welcome via issues. |
 
 ## Setup
 
@@ -175,6 +196,11 @@ Other scars encoded in these scripts:
 - Archiving a monitored movie without unmonitoring it just makes Radarr
   cheerfully re-download it. The scan exports Radarr/Sonarr IDs so the cycle
   can unmonitor after each verified move.
+
+## Versioning
+
+See [CHANGELOG.md](CHANGELOG.md). Releases are tagged; `main` is kept green
+by CI (shellcheck + full test suite on every push and PR).
 
 ## License
 
