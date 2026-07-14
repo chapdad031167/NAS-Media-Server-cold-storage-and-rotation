@@ -294,11 +294,15 @@ doctor() (
     fi
     ok "config.env present"
 
-    # config.env holds API keys and is sourced by the scripts; it must
-    # not be group/other-readable or -writable.
+    # config.env holds API keys and is sourced (executed). Writable by
+    # group/other means code injection: REFUSE, matching the scripts.
+    # Readable by group/other merely leaks keys: warn.
     _cfg_perm=$(stat -c '%a' "$CONFIG_PATH" 2>/dev/null || echo "")
-    if [[ -n "$_cfg_perm" && $(( 8#$_cfg_perm & 077 )) -ne 0 ]]; then
-        warn "config.env mode is $_cfg_perm (group/other can access it). Fix: chmod 600 $CONFIG_PATH"
+    if [[ -n "$_cfg_perm" && $(( 8#$_cfg_perm & 022 )) -ne 0 ]]; then
+        fail "config.env is group/other-WRITABLE (mode $_cfg_perm) - refusing to source it. Fix: chmod 600 $CONFIG_PATH"
+        _doctor_done 1
+    elif [[ -n "$_cfg_perm" && $(( 8#$_cfg_perm & 044 )) -ne 0 ]]; then
+        warn "config.env mode is $_cfg_perm (group/other can READ it - it holds API keys). Fix: chmod 600 $CONFIG_PATH"
     else
         ok "config.env permissions locked down (mode ${_cfg_perm:-unknown})"
     fi
