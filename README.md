@@ -202,10 +202,16 @@ Other scars encoded in these scripts:
   cheerfully re-download it. The scan exports Radarr/Sonarr IDs so the cycle
   can unmonitor after each verified move.
 
+## Security
+
+See [SECURITY.md](SECURITY.md) for the security model (dry-run defaults, keys
+kept out of process arguments, `config.env` permission enforcement, CI secret
+scan) and how to report a vulnerability privately.
+
 ## Versioning
 
 See [CHANGELOG.md](CHANGELOG.md). Releases are tagged; `main` is kept green
-by CI (shellcheck + full test suite on every push and PR).
+by CI (shellcheck + secret scan + full test suite on every push and PR).
 
 ## License
 

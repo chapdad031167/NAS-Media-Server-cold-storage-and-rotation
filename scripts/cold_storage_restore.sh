@@ -20,6 +20,14 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="${CONFIG_FILE:-$SCRIPT_DIR/../config.env}"
 if [[ -f "$CONFIG_FILE" ]]; then
+    # config.env is sourced (executed) - refuse it if group- or
+    # other-writable, which would let another user inject code here.
+    _cfg_perm=$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null || echo "")
+    if [[ -n "$_cfg_perm" && $(( 8#$_cfg_perm & 022 )) -ne 0 ]]; then
+        echo "ERROR: $CONFIG_FILE is group/other-writable (mode $_cfg_perm); refusing to source it." >&2
+        echo "Fix with: chmod 600 $CONFIG_FILE" >&2
+        exit 1
+    fi
     # shellcheck disable=SC1090  # user-supplied config, path known only at runtime
     source "$CONFIG_FILE"
 fi
@@ -32,7 +40,9 @@ TV_DIR="${TV_DIR:-/volume1/TV Shows}"
 LOG_DIR="${LOG_DIR:-$SCRIPT_DIR/../logs}"
 LOG_FILE="$LOG_DIR/cold_storage_restore_$(date +%Y%m%d_%H%M%S).log"
 LOG_RETENTION_DAYS="${LOG_RETENTION_DAYS:-90}"
-LOCK_DIR="${LOCK_DIR:-${TMPDIR:-/tmp}}"
+# Locks default to a user-owned dir inside the install, not /tmp:
+# predictable names in world-writable /tmp invite lock-squatting.
+LOCK_DIR="${LOCK_DIR:-$SCRIPT_DIR/../.locks}"
 MANIFEST_FILE="${MANIFEST_FILE:-$COLD_ROOT/cold_storage_manifest.jsonl}"
 NTFY_URL="${NTFY_URL:-}"
 DISCORD_WEBHOOK_URL="${DISCORD_WEBHOOK_URL:-}"
@@ -50,6 +60,7 @@ fi
 
 # Refuse to run concurrently with another restore OR with the
 # cycle script - both walk the same trees.
+mkdir -p "$LOCK_DIR"
 exec 9>"$LOCK_DIR/nas_media_cold_storage_cycle.lock"
 if ! flock -n 9; then
     echo "ERROR: a cold storage cycle/restore is already running. Exiting." >&2
@@ -63,16 +74,21 @@ log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
 }
 
+# The webhook URL is itself a credential (anyone holding it can post),
+# so it reaches curl via --config on stdin, never argv - argv is
+# world-readable through /proc/<pid>/cmdline.
 notify() {
     local msg="$1"
     if [[ -n "$NTFY_URL" ]]; then
-        curl -fsS -m 10 -H "Title: cold_storage_restore" -d "$msg" "$NTFY_URL" >/dev/null 2>&1 \
+        printf 'url = "%s"\n' "$NTFY_URL" \
+            | curl -fsS -m 10 -H "Title: cold_storage_restore" -d "$msg" -K - >/dev/null 2>&1 \
             || log "WARNING: ntfy notification failed"
     fi
     if [[ -n "$DISCORD_WEBHOOK_URL" ]]; then
-        curl -fsS -m 10 -H "Content-Type: application/json" \
-            -d "$(python3 -c 'import json,sys; print(json.dumps({"content": sys.argv[1]}))' "$msg")" \
-            "$DISCORD_WEBHOOK_URL" >/dev/null 2>&1 \
+        printf 'url = "%s"\n' "$DISCORD_WEBHOOK_URL" \
+            | curl -fsS -m 10 -H "Content-Type: application/json" \
+                -d "$(python3 -c 'import json,sys; print(json.dumps({"content": sys.argv[1]}))' "$msg")" \
+                -K - >/dev/null 2>&1 \
             || log "WARNING: discord notification failed"
     fi
 }
@@ -249,9 +265,12 @@ set_monitored() {
         return 1
     fi
 
-    python3 - "$BASE" "$KEY" "$ENDPOINT" "$ITEM_ID" "$MONITORED" "$NEW_PATH" <<'PYEOF'
-import sys, json, urllib.request
-base, key, endpoint, item_id, monitored, new_path = sys.argv[1:7]
+    # API key passed via environment, not argv (argv is world-readable
+    # via /proc/<pid>/cmdline; environ is owner/root-only).
+    NAS_ARR_KEY="$KEY" python3 - "$BASE" "$ENDPOINT" "$ITEM_ID" "$MONITORED" "$NEW_PATH" <<'PYEOF'
+import os, sys, json, urllib.request
+base, endpoint, item_id, monitored, new_path = sys.argv[1:6]
+key = os.environ["NAS_ARR_KEY"]
 url = f"{base}/api/v3/{endpoint}/{item_id}"
 headers = {"X-Api-Key": key, "Content-Type": "application/json"}
 try:

@@ -65,6 +65,14 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="${CONFIG_FILE:-$SCRIPT_DIR/../config.env}"
 if [[ -f "$CONFIG_FILE" ]]; then
+    # config.env is sourced (executed) - refuse it if group- or
+    # other-writable, which would let another user inject code here.
+    _cfg_perm=$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null || echo "")
+    if [[ -n "$_cfg_perm" && $(( 8#$_cfg_perm & 022 )) -ne 0 ]]; then
+        echo "ERROR: $CONFIG_FILE is group/other-writable (mode $_cfg_perm); refusing to source it." >&2
+        echo "Fix with: chmod 600 $CONFIG_FILE" >&2
+        exit 1
+    fi
     # shellcheck disable=SC1090  # user-supplied config, path known only at runtime
     source "$CONFIG_FILE"
 fi
@@ -76,7 +84,9 @@ COLD_TV="$COLD_ROOT/TV Shows"
 LOG_DIR="${LOG_DIR:-$SCRIPT_DIR/../logs}"
 LOG_FILE="$LOG_DIR/cold_storage_cycle_$(date +%Y%m%d_%H%M%S).log"
 LOG_RETENTION_DAYS="${LOG_RETENTION_DAYS:-90}"
-LOCK_DIR="${LOCK_DIR:-${TMPDIR:-/tmp}}"
+# Locks default to a user-owned dir inside the install, not /tmp:
+# predictable names in world-writable /tmp invite lock-squatting.
+LOCK_DIR="${LOCK_DIR:-$SCRIPT_DIR/../.locks}"
 CANDIDATE_MAX_AGE_DAYS="${CANDIDATE_MAX_AGE_DAYS:-7}"
 MANIFEST_FILE="${MANIFEST_FILE:-$COLD_ROOT/cold_storage_manifest.jsonl}"
 POOL_TARGET_PCT="${POOL_TARGET_PCT:-0}"
@@ -115,6 +125,7 @@ fi
 # Refuse to run concurrently (fd 9 holds the lock for the
 # lifetime of the script) - a cycle can run for hours and a
 # second instance walking the same candidate list would collide.
+mkdir -p "$LOCK_DIR"
 exec 9>"$LOCK_DIR/nas_media_cold_storage_cycle.lock"
 if ! flock -n 9; then
     echo "ERROR: another cold_storage_cycle.sh is already running. Exiting." >&2
@@ -131,16 +142,21 @@ log() {
 # Best-effort push notification (ntfy and/or Discord webhook).
 # No-op when neither URL is configured; a failed push warns but
 # never breaks the run.
+# The webhook URL is itself a credential (anyone holding it can post),
+# so it reaches curl via --config on stdin, never argv - argv is
+# world-readable through /proc/<pid>/cmdline.
 notify() {
     local msg="$1"
     if [[ -n "$NTFY_URL" ]]; then
-        curl -fsS -m 10 -H "Title: cold_storage_cycle" -d "$msg" "$NTFY_URL" >/dev/null 2>&1 \
+        printf 'url = "%s"\n' "$NTFY_URL" \
+            | curl -fsS -m 10 -H "Title: cold_storage_cycle" -d "$msg" -K - >/dev/null 2>&1 \
             || log "WARNING: ntfy notification failed"
     fi
     if [[ -n "$DISCORD_WEBHOOK_URL" ]]; then
-        curl -fsS -m 10 -H "Content-Type: application/json" \
-            -d "$(python3 -c 'import json,sys; print(json.dumps({"content": sys.argv[1]}))' "$msg")" \
-            "$DISCORD_WEBHOOK_URL" >/dev/null 2>&1 \
+        printf 'url = "%s"\n' "$DISCORD_WEBHOOK_URL" \
+            | curl -fsS -m 10 -H "Content-Type: application/json" \
+                -d "$(python3 -c 'import json,sys; print(json.dumps({"content": sys.argv[1]}))' "$msg")" \
+                -K - >/dev/null 2>&1 \
             || log "WARNING: discord notification failed"
     fi
 }
@@ -230,12 +246,17 @@ if [[ "$DRY_RUN" == false ]]; then
 fi
 
 # --- FREE SPACE PREFLIGHT (v2) -------------------------------
-TOTAL_NEEDED=$(python3 -c "
+if ! TOTAL_NEEDED=$(python3 -c "
 import json
 with open('$CANDIDATE_FILE') as f:
     data = json.load(f)
 print(data.get('total_size_bytes', 0))
-")
+"); then
+    log "ERROR: could not parse candidate file $CANDIDATE_FILE (invalid JSON?)."
+    log "Rerun cold_storage_scan.py to regenerate it."
+    notify "cold_storage_cycle ERROR: candidate file parse failed ($CANDIDATE_FILE)"
+    exit 1
+fi
 COLD_AVAIL=$(df -PB1 "$COLD_ROOT" 2>/dev/null | awk 'NR==2{print $4}')
 COLD_AVAIL=${COLD_AVAIL:-0}
 NEEDED_WITH_HEADROOM=$(( TOTAL_NEEDED + TOTAL_NEEDED / 20 ))
@@ -296,9 +317,13 @@ unmonitor_item() {
 
     # The heredoc is python's stdin, which also shields the outer
     # while-read loop's stdin from being consumed.
-    python3 - "$BASE" "$KEY" "$ENDPOINT" "$ITEM_ID" "$NEW_PATH" <<'PYEOF'
-import sys, json, urllib.request
-base, key, endpoint, item_id, new_path = sys.argv[1:6]
+    # The API key is passed via the environment, NOT argv: argv is
+    # world-readable through /proc/<pid>/cmdline, but /proc/<pid>/environ
+    # is readable only by the owner and root.
+    NAS_ARR_KEY="$KEY" python3 - "$BASE" "$ENDPOINT" "$ITEM_ID" "$NEW_PATH" <<'PYEOF'
+import os, sys, json, urllib.request
+base, endpoint, item_id, new_path = sys.argv[1:5]
+key = os.environ["NAS_ARR_KEY"]
 url = f"{base}/api/v3/{endpoint}/{item_id}"
 headers = {"X-Api-Key": key, "Content-Type": "application/json"}
 try:
@@ -370,6 +395,16 @@ with open('$CANDIDATE_FILE') as f:
 for c in data['candidates']:
     print(f\"{c['type']}\t{c['path']}\t{c['name']}\t{c['size_bytes']}\t{c.get('id','')}\t{c.get('age_days', 0)}\")
 " | sort -t$'\t' -k6,6 -rn > "$TMPFILE"
+
+# L4: pipefail is off, so sort's success would mask a python parse
+# failure - check the emitter's status explicitly.
+if [[ "${PIPESTATUS[0]}" -ne 0 ]]; then
+    log "ERROR: could not parse candidate file $CANDIDATE_FILE (invalid JSON?)."
+    log "Rerun cold_storage_scan.py to regenerate it."
+    notify "cold_storage_cycle ERROR: candidate file parse failed ($CANDIDATE_FILE)"
+    rm -f "$TMPFILE"
+    exit 1
+fi
 
 TOTAL_ITEMS=$(wc -l < "$TMPFILE")
 log "Total candidates to process: $TOTAL_ITEMS"

@@ -37,6 +37,14 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="${CONFIG_FILE:-$SCRIPT_DIR/../config.env}"
 if [[ -f "$CONFIG_FILE" ]]; then
+    # config.env is sourced (executed) - refuse it if group- or
+    # other-writable, which would let another user inject code here.
+    _cfg_perm=$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null || echo "")
+    if [[ -n "$_cfg_perm" && $(( 8#$_cfg_perm & 022 )) -ne 0 ]]; then
+        echo "ERROR: $CONFIG_FILE is group/other-writable (mode $_cfg_perm); refusing to source it." >&2
+        echo "Fix with: chmod 600 $CONFIG_FILE" >&2
+        exit 1
+    fi
     # shellcheck disable=SC1090  # user-supplied config, path known only at runtime
     source "$CONFIG_FILE"
 fi
@@ -48,7 +56,9 @@ MEDIA_TV="${TV_DIR:-/volume1/TV Shows}"
 LOG_DIR="${LOG_DIR:-$SCRIPT_DIR/../logs}"
 LOG_FILE="$LOG_DIR/torrent_cleanup_$(date +%Y%m%d_%H%M%S).log"
 LOG_RETENTION_DAYS="${LOG_RETENTION_DAYS:-90}"
-LOCK_DIR="${LOCK_DIR:-${TMPDIR:-/tmp}}"
+# Locks default to a user-owned dir inside the install, not /tmp:
+# predictable names in world-writable /tmp invite lock-squatting.
+LOCK_DIR="${LOCK_DIR:-$SCRIPT_DIR/../.locks}"
 DRY_RUN=true
 
 if [[ "$1" == "--run" ]]; then
@@ -57,6 +67,7 @@ fi
 
 # Refuse to run concurrently (fd 9 holds the lock for the
 # lifetime of the script)
+mkdir -p "$LOCK_DIR"
 exec 9>"$LOCK_DIR/nas_media_torrent_cleanup.lock"
 if ! flock -n 9; then
     echo "ERROR: another torrent_cleanup.sh is already running. Exiting." >&2
