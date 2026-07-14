@@ -37,6 +37,14 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="${CONFIG_FILE:-$SCRIPT_DIR/../config.env}"
 if [[ -f "$CONFIG_FILE" ]]; then
+    # config.env is sourced (executed) - refuse it if group- or
+    # other-writable, which would let another user inject code here.
+    _cfg_perm=$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null || echo "")
+    if [[ -n "$_cfg_perm" && $(( 8#$_cfg_perm & 022 )) -ne 0 ]]; then
+        echo "ERROR: $CONFIG_FILE is group/other-writable (mode $_cfg_perm); refusing to source it." >&2
+        echo "Fix with: chmod 600 $CONFIG_FILE" >&2
+        exit 1
+    fi
     # shellcheck disable=SC1090  # user-supplied config, path known only at runtime
     source "$CONFIG_FILE"
 fi

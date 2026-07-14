@@ -3,6 +3,20 @@
 All notable changes to this project are documented here. Versioning follows
 [Semantic Versioning](https://semver.org/); dates are YYYY-MM-DD.
 
+## [Unreleased]
+
+### Security hardening
+- API keys are now passed to helper processes via the environment, never as
+  command-line arguments (argv is world-readable via `/proc/<pid>/cmdline`).
+- `install.sh` shell-escapes values written to `config.env` (a `"`, `$`, or
+  `` ` `` in a password/webhook could previously corrupt the sourced file).
+- The scripts refuse to source a group/other-writable `config.env`, and
+  `install.sh --doctor` warns on loose permissions.
+- `cold_storage_cycle.sh` fails clearly on an unparseable candidate file
+  instead of silently treating it as empty.
+- New `tests/secret_scan.sh` runs in CI to catch leaked keys/IPs.
+- See [SECURITY.md](SECURITY.md) for the security model and reporting.
+
 ## [1.0.0] - 2026-07-09
 
 Initial public release: a sanitized, tested, documented packaging of a
