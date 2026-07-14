@@ -96,6 +96,18 @@ with open(sys.argv[1], "a") as f:
 PYEOF
 }
 
+# --- COLD STORAGE MOUNT CHECK (v1) ---------------------------
+# The archive we read from must be mounted; fail clearly if not,
+# rather than reporting an empty (misleading) archive listing.
+COLD_PARENT="$(dirname "$COLD_ROOT")"
+if [[ ! -d "$COLD_PARENT" ]]; then
+    log "ERROR: Cold storage mount not found: $COLD_PARENT"
+    log "COLD_ROOT is set to '$COLD_ROOT' but its parent directory does not exist."
+    log "Check COLD_ROOT in your config.env, or plug in the archive drive and"
+    log "find its real mount with:  df -h | grep -i usb"
+    exit 1
+fi
+
 # --- LIST MODE -----------------------------------------------
 if [[ -z "$QUERY" ]]; then
     log "Archived items in $COLD_ROOT:"

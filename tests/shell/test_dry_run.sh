@@ -132,6 +132,16 @@ check "dry run is the default" grep -q "DRY_RUN: true" <<<"$OUT"
 check "dry run moves nothing" test -d "$SRC"
 check "dry run creates nothing in cold storage" test ! -e "$COLD_ROOT/Movies/Old Drama (2010)"
 
+# Mount check: COLD_ROOT whose parent mount is missing fails early
+# and clearly (regression: the /mnt/usb "0.00 GB free" footgun),
+# even on a dry run, and touches nothing.
+OUT=$(COLD_ROOT="$WORK/no_such_mount/Cold" bash "$SCRIPTS/cold_storage_cycle.sh")
+RC=$?
+check "missing cold mount fails" test "$RC" -ne 0
+check "missing cold mount is reported clearly" grep -q "Cold storage mount not found" <<<"$OUT"
+check "missing cold mount gives df hint" grep -q "df -h | grep -i usb" <<<"$OUT"
+check "missing cold mount moved nothing" test -d "$SRC"
+
 # Staleness guard: an old candidate file warns on dry run and
 # hard-refuses --run
 touch -d "10 days ago" "$CANDIDATE_FILE"
