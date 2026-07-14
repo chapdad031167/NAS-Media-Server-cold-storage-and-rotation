@@ -46,6 +46,13 @@ check "config.env created from template" test -f "$TARGET/config.env"
 check "config.env is mode 600" test "$(stat -c %a "$TARGET/config.env")" = "600"
 check "guided setup skipped with --yes" grep -q "Skipping guided setup" <<<"$OUT"
 check "script verification ran" grep -q "bash -n cold_storage_cycle.sh" <<<"$OUT"
+# The guided COLD_ROOT default must not be a fake absolute path that
+# masquerades as real config (regression: /mnt/usb/Cold footgun).
+if grep -qE 'COLD_ROOT\|.*\|/mnt/usb' "$REPO_DIR/install.sh"; then
+    check "installer offers no fake COLD_ROOT default" false
+else
+    check "installer offers no fake COLD_ROOT default" true
+fi
 
 echo "=== re-run never overwrites config ==="
 echo 'MY_CUSTOM_MARKER=keepme' >> "$TARGET/config.env"
@@ -62,6 +69,22 @@ check "doctor sees the config" grep -q "config.env present" <<<"$OUT"
 check "doctor flags unconfigured Radarr as warning" grep -q "Radarr not configured yet" <<<"$OUT"
 check "doctor flags unmounted cold root as warning" grep -q "COLD_ROOT" <<<"$OUT"
 check "warnings are counted" grep -qE "Finished with [1-9][0-9]* warning" <<<"$OUT"
+
+echo "=== --doctor with a non-existent COLD_ROOT gives actionable guidance ==="
+# Point COLD_ROOT at a real-looking path that does not exist (the exact
+# footgun a user hits by accepting a bad default).
+python3 - "$TARGET/config.env" <<'PYEOF'
+import re, sys
+p = sys.argv[1]
+t = open(p).read()
+t = re.sub(r'^#?\s*COLD_ROOT=.*$', 'COLD_ROOT="/mnt/does/not/exist/Cold"', t, count=1, flags=re.M)
+open(p, "w").write(t)
+PYEOF
+OUT=$(bash "$TARGET/install.sh" --doctor </dev/null)
+RC=$?
+check "doctor still exits 0 (drive may be unplugged)" test "$RC" -eq 0
+check "doctor reports COLD_ROOT does not exist" grep -q "COLD_ROOT does not exist" <<<"$OUT"
+check "doctor gives the df discovery hint" grep -q "df -h | grep -i usb" <<<"$OUT"
 
 echo "=== --doctor without a config ==="
 NOCFG="$WORK/empty"
