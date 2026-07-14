@@ -99,6 +99,11 @@ Honest accounting of what's verified where:
 Requirements: bash 4+, Python 3.8+ (stdlib only), rsync, and Radarr/Sonarr v3
 API access.
 
+> 📖 **Synology users:** [INSTALL.md](INSTALL.md) is a full step-by-step
+> walkthrough (SSH, install, the config prompts — including the USB-mount
+> gotcha — and DSM Task Scheduler). The quick version below works on any
+> supported platform.
+
 ### Quick install (on the NAS)
 
 ```bash

@@ -186,7 +186,7 @@ prompt_config_values() {
     done <<'FIELDS'
 MOVIES_DIR|Host path of your movie library|/volume1/Movies
 TV_DIR|Host path of your TV library|/volume1/TV Shows
-COLD_ROOT|Mount point of the cold storage (USB) drive, e.g. /volumeUSB1/usbshare/Cold|/mnt/usb/Cold
+COLD_ROOT|Cold storage (USB archive) mount + subfolder. Find yours with:  df -h | grep -i usb   (Synology is often /mnt/@usb/sdX1/Cold or /volumeUSB1/usbshare/Cold). Leave blank to set later.|
 RADARR_URL|Radarr URL (Settings > General shows the port)|http://localhost:7878
 RADARR_API_KEY|Radarr API key (Settings > General > Security)|
 SONARR_URL|Sonarr URL|http://localhost:8989
@@ -305,7 +305,12 @@ doctor() (
     elif [[ -d "${COLD_ROOT}" ]]; then
         ok "COLD_ROOT mounted ($COLD_ROOT)"
     else
-        warn "COLD_ROOT not mounted: $COLD_ROOT (plug in the archive drive before a cycle)"
+        warn "COLD_ROOT does not exist: $COLD_ROOT"
+        say "         cold_storage_cycle.sh and restore will refuse to run until this"
+        say "         path exists. Plug in the archive drive, then find its real mount:"
+        say "           df -h | grep -i usb"
+        say "         On Synology it is usually /mnt/@usb/sdX1/... or /volumeUSB1/usbshare/..."
+        say "         Set COLD_ROOT in $CONFIG_PATH to that path + a /Cold subfolder."
     fi
 
     if is_placeholder "${RADARR_API_KEY:-}" || is_placeholder "${RADARR_URL:-}"; then

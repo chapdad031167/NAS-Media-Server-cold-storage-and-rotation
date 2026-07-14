@@ -196,6 +196,23 @@ if ! command -v rsync >/dev/null 2>&1; then
     exit 1
 fi
 
+# --- COLD STORAGE MOUNT CHECK (v2.4) -------------------------
+# Fail early and clearly if COLD_ROOT's mount is missing, instead
+# of letting a bad path fall through to a "0.00 GB free" abort or
+# a "mkdir: Permission denied". COLD_ROOT itself may not exist yet
+# on a first run (we create the /Cold subfolder), so we check its
+# PARENT - the actual mount point - which must already be present.
+COLD_PARENT="$(dirname "$COLD_ROOT")"
+if [[ ! -d "$COLD_PARENT" ]]; then
+    log "ERROR: Cold storage mount not found: $COLD_PARENT"
+    log "COLD_ROOT is set to '$COLD_ROOT' but its parent directory does not exist."
+    log "Check COLD_ROOT in your config.env, or plug in the archive drive and"
+    log "find its real mount with:  df -h | grep -i usb"
+    log "(On Synology it is usually /mnt/@usb/sdX1/... or /volumeUSB1/usbshare/...)"
+    notify "cold_storage_cycle ERROR: cold storage mount not found ($COLD_PARENT)"
+    exit 1
+fi
+
 log "=============================="
 log "  cold_storage_cycle.sh v2.4"
 log "  DRY_RUN: $DRY_RUN"
