@@ -5,6 +5,7 @@ config.env
 logs/
 *.log
 cold_storage_candidates.json
+.locks/
 
 # Python
 __pycache__/

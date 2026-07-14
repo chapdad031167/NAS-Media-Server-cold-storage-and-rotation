@@ -87,6 +87,46 @@ OUT=$(CONFIG_FILE="$GOODCFG" LOG_DIR="$WORK/logs" LOCK_DIR="$WORK" \
       bash "$SCRIPTS/duplicate_cleanup.sh" 2>&1)
 check "mode-600 config is accepted" grep -q "duplicate_cleanup.sh" <<<"$OUT"
 
+# --- M-A: webhook URLs never on a curl command line ----------
+echo "=== M-A: webhook URLs via curl stdin config, not argv ==="
+for f in "$SCRIPTS/cold_storage_cycle.sh" "$SCRIPTS/cold_storage_restore.sh"; do
+    name=$(basename "$f")
+    # No line may put curl and a webhook-URL variable together
+    if grep -Eq 'curl.*(NTFY_URL|DISCORD_WEBHOOK_URL)|(NTFY_URL|DISCORD_WEBHOOK_URL).*curl' "$f"; then
+        check "$name keeps webhook URLs off curl argv" false
+    else
+        check "$name keeps webhook URLs off curl argv" true
+    fi
+    check "$name feeds curl via stdin config (-K -)" grep -Fq -e '-K -' -- "$f"
+done
+# Functional: notify path with an unreachable URL still exits clean
+export MOVIES_DIR_MA="$WORK/ma_movies"; mkdir -p "$MOVIES_DIR_MA"
+OUT=$(NTFY_URL="http://127.0.0.1:9/t" MOVIES_DIR="$MOVIES_DIR_MA" TV_DIR="$MOVIES_DIR_MA" \
+      COLD_ROOT="$WORK/ma_cold" CANDIDATE_FILE="$WORK/nope.json" \
+      bash "$SCRIPTS/cold_storage_cycle.sh" 2>&1)
+check "notify via -K - does not crash on unreachable URL" grep -q "Candidate file not found" <<<"$OUT"
+
+# --- M-C: locks not in world-writable /tmp -------------------
+echo "=== M-C: lock dir defaults to a user-owned location ==="
+for f in "$SCRIPTS"/*.sh; do
+    name=$(basename "$f")
+    if grep -Fq 'LOCK_DIR:-${TMPDIR:-/tmp}' "$f"; then
+        check "$name lock default is not /tmp" false
+    else
+        check "$name lock default is not /tmp" true
+    fi
+done
+if grep -Fq '"LOCK_DIR": "/tmp"' "$SCRIPTS/cold_storage_scan.py" "$SCRIPTS/torrent_cleanup_api.py"; then
+    check "python lock defaults are not /tmp" false
+else
+    check "python lock defaults are not /tmp" true
+fi
+# Functional: default lock dir is created on demand (no LOCK_DIR set)
+DEFAULT_LOCK_DIR="$REPO_DIR/.locks"
+OUT=$(env -u LOCK_DIR CONFIG_FILE="$WORK/config.env" LOG_DIR="$WORK/logs" \
+      MOVIES_DIR="$MOVIES_DIR_MA" bash "$SCRIPTS/duplicate_cleanup.sh" 2>&1)
+check "default .locks dir auto-created" test -d "$DEFAULT_LOCK_DIR"
+
 # --- secret_scan: clean on repo, catches a planted key -------
 echo "=== secret_scan.sh ==="
 # Negative: the real repo must scan clean (the scanner must not

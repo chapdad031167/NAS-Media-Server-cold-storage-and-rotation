@@ -7,7 +7,12 @@ All notable changes to this project are documented here. Versioning follows
 
 ### Security hardening
 - API keys are now passed to helper processes via the environment, never as
-  command-line arguments (argv is world-readable via `/proc/<pid>/cmdline`).
+  command-line arguments (argv is world-readable via `/proc/<pid>/cmdline`);
+  webhook URLs (ntfy/Discord — themselves credentials) reach curl via
+  `--config` on stdin for the same reason.
+- Lock files moved from world-writable `/tmp` to a user-owned `.locks/`
+  directory inside the install (prevents lock-squatting DoS by other users).
+- CI workflow token restricted to `contents: read`.
 - `install.sh` shell-escapes values written to `config.env` (a `"`, `$`, or
   `` ` `` in a password/webhook could previously corrupt the sourced file).
 - The scripts refuse to source a group/other-writable `config.env`, and

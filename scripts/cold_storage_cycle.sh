@@ -84,7 +84,9 @@ COLD_TV="$COLD_ROOT/TV Shows"
 LOG_DIR="${LOG_DIR:-$SCRIPT_DIR/../logs}"
 LOG_FILE="$LOG_DIR/cold_storage_cycle_$(date +%Y%m%d_%H%M%S).log"
 LOG_RETENTION_DAYS="${LOG_RETENTION_DAYS:-90}"
-LOCK_DIR="${LOCK_DIR:-${TMPDIR:-/tmp}}"
+# Locks default to a user-owned dir inside the install, not /tmp:
+# predictable names in world-writable /tmp invite lock-squatting.
+LOCK_DIR="${LOCK_DIR:-$SCRIPT_DIR/../.locks}"
 CANDIDATE_MAX_AGE_DAYS="${CANDIDATE_MAX_AGE_DAYS:-7}"
 MANIFEST_FILE="${MANIFEST_FILE:-$COLD_ROOT/cold_storage_manifest.jsonl}"
 POOL_TARGET_PCT="${POOL_TARGET_PCT:-0}"
@@ -123,6 +125,7 @@ fi
 # Refuse to run concurrently (fd 9 holds the lock for the
 # lifetime of the script) - a cycle can run for hours and a
 # second instance walking the same candidate list would collide.
+mkdir -p "$LOCK_DIR"
 exec 9>"$LOCK_DIR/nas_media_cold_storage_cycle.lock"
 if ! flock -n 9; then
     echo "ERROR: another cold_storage_cycle.sh is already running. Exiting." >&2
@@ -139,16 +142,21 @@ log() {
 # Best-effort push notification (ntfy and/or Discord webhook).
 # No-op when neither URL is configured; a failed push warns but
 # never breaks the run.
+# The webhook URL is itself a credential (anyone holding it can post),
+# so it reaches curl via --config on stdin, never argv - argv is
+# world-readable through /proc/<pid>/cmdline.
 notify() {
     local msg="$1"
     if [[ -n "$NTFY_URL" ]]; then
-        curl -fsS -m 10 -H "Title: cold_storage_cycle" -d "$msg" "$NTFY_URL" >/dev/null 2>&1 \
+        printf 'url = "%s"\n' "$NTFY_URL" \
+            | curl -fsS -m 10 -H "Title: cold_storage_cycle" -d "$msg" -K - >/dev/null 2>&1 \
             || log "WARNING: ntfy notification failed"
     fi
     if [[ -n "$DISCORD_WEBHOOK_URL" ]]; then
-        curl -fsS -m 10 -H "Content-Type: application/json" \
-            -d "$(python3 -c 'import json,sys; print(json.dumps({"content": sys.argv[1]}))' "$msg")" \
-            "$DISCORD_WEBHOOK_URL" >/dev/null 2>&1 \
+        printf 'url = "%s"\n' "$DISCORD_WEBHOOK_URL" \
+            | curl -fsS -m 10 -H "Content-Type: application/json" \
+                -d "$(python3 -c 'import json,sys; print(json.dumps({"content": sys.argv[1]}))' "$msg")" \
+                -K - >/dev/null 2>&1 \
             || log "WARNING: discord notification failed"
     fi
 }
