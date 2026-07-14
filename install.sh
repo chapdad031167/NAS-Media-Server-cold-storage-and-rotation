@@ -145,17 +145,25 @@ create_config() {
 }
 
 # set_config_value KEY VALUE - rewrite one assignment in config.env,
-# preserving all comments (python handles quoting/escaping safely)
+# preserving all comments. config.env is later `source`d by bash, so
+# the value is shell-escaped for a double-quoted context (\ " $ `);
+# an unescaped " or $ would otherwise corrupt the file or, worse,
+# execute on the next run.
 set_config_value() {
     python3 - "$CONFIG_PATH" "$1" "$2" <<'PYEOF'
 import re, sys
 path, key, value = sys.argv[1:4]
 with open(path) as f:
     text = f.read()
-line = f'{key}="{value}"'
+esc = (value.replace("\\", "\\\\")
+            .replace('"', '\\"')
+            .replace("$", "\\$")
+            .replace("`", "\\`"))
+line = f'{key}="{esc}"'
 pattern = re.compile(rf'^#?\s*{re.escape(key)}=.*$', re.M)
 if pattern.search(text):
-    text = pattern.sub(line.replace("\\", "\\\\"), text, count=1)
+    # function replacement: no backslash-escape processing on `line`
+    text = pattern.sub(lambda _m: line, text, count=1)
 else:
     text = text.rstrip("\n") + "\n" + line + "\n"
 with open(path, "w") as f:
@@ -222,11 +230,13 @@ verify_scripts() {
     return $rc
 }
 
-# arr_reachable URL KEY - 0 when the v3 API answers with this key
+# arr_reachable URL KEY - 0 when the v3 API answers with this key.
+# Key travels via the environment, not argv (argv is world-readable
+# through /proc/<pid>/cmdline; environ is owner/root-only).
 arr_reachable() {
-    python3 - "$1" "$2" <<'PYEOF'
-import sys, urllib.request
-url, key = sys.argv[1].rstrip("/"), sys.argv[2]
+    NAS_ARR_KEY="$2" python3 - "$1" <<'PYEOF'
+import os, sys, urllib.request
+url, key = sys.argv[1].rstrip("/"), os.environ["NAS_ARR_KEY"]
 req = urllib.request.Request(f"{url}/api/v3/system/status", headers={"X-Api-Key": key})
 try:
     with urllib.request.urlopen(req, timeout=5) as r:
@@ -237,9 +247,9 @@ PYEOF
 }
 
 tautulli_reachable() {
-    python3 - "$1" "$2" <<'PYEOF'
-import json, sys, urllib.parse, urllib.request
-url, key = sys.argv[1].rstrip("/"), sys.argv[2]
+    NAS_ARR_KEY="$2" python3 - "$1" <<'PYEOF'
+import json, os, sys, urllib.parse, urllib.request
+url, key = sys.argv[1].rstrip("/"), os.environ["NAS_ARR_KEY"]
 q = urllib.parse.urlencode({"apikey": key, "cmd": "status"})
 try:
     with urllib.request.urlopen(f"{url}/api/v2?{q}", timeout=5) as r:
@@ -283,6 +293,15 @@ doctor() (
         _doctor_done 1
     fi
     ok "config.env present"
+
+    # config.env holds API keys and is sourced by the scripts; it must
+    # not be group/other-readable or -writable.
+    _cfg_perm=$(stat -c '%a' "$CONFIG_PATH" 2>/dev/null || echo "")
+    if [[ -n "$_cfg_perm" && $(( 8#$_cfg_perm & 077 )) -ne 0 ]]; then
+        warn "config.env mode is $_cfg_perm (group/other can access it). Fix: chmod 600 $CONFIG_PATH"
+    else
+        ok "config.env permissions locked down (mode ${_cfg_perm:-unknown})"
+    fi
 
     set +u
     # shellcheck disable=SC1090  # the user's own config
@@ -359,31 +378,39 @@ next_steps() {
 }
 
 # --- MAIN ----------------------------------------------------
-say "nas-media-automation installer"
-say "=============================="
+# Guarded so the file can be `source`d (e.g. by tests) to reuse the
+# functions above without running the installer.
+main() {
+    say "nas-media-automation installer"
+    say "=============================="
 
-if [[ "$DOCTOR_ONLY" == true ]]; then
-    check_prereqs
-    run_doctor || true
-else
-    check_prereqs
+    if [[ "$DOCTOR_ONLY" == true ]]; then
+        check_prereqs
+        run_doctor || true
+    else
+        check_prereqs
+        if (( FAILURES > 0 )); then
+            say ""
+            say "ERROR: fix the failed prerequisites above, then re-run install.sh"
+            exit 1
+        fi
+        CONFIG_IS_FRESH=false
+        install_files
+        create_config
+        prompt_config_values
+        verify_scripts
+        run_doctor || true
+        next_steps
+    fi
+
+    say ""
     if (( FAILURES > 0 )); then
-        say ""
-        say "ERROR: fix the failed prerequisites above, then re-run install.sh"
+        say "Finished with $FAILURES failure(s) and $WARNINGS warning(s)."
         exit 1
     fi
-    CONFIG_IS_FRESH=false
-    install_files
-    create_config
-    prompt_config_values
-    verify_scripts
-    run_doctor || true
-    next_steps
-fi
+    say "Finished with $WARNINGS warning(s). Warnings are normal until config.env is filled in."
+}
 
-say ""
-if (( FAILURES > 0 )); then
-    say "Finished with $FAILURES failure(s) and $WARNINGS warning(s)."
-    exit 1
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main
 fi
-say "Finished with $WARNINGS warning(s). Warnings are normal until config.env is filled in."

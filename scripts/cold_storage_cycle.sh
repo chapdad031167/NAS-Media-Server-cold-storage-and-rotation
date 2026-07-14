@@ -65,6 +65,14 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="${CONFIG_FILE:-$SCRIPT_DIR/../config.env}"
 if [[ -f "$CONFIG_FILE" ]]; then
+    # config.env is sourced (executed) - refuse it if group- or
+    # other-writable, which would let another user inject code here.
+    _cfg_perm=$(stat -c '%a' "$CONFIG_FILE" 2>/dev/null || echo "")
+    if [[ -n "$_cfg_perm" && $(( 8#$_cfg_perm & 022 )) -ne 0 ]]; then
+        echo "ERROR: $CONFIG_FILE is group/other-writable (mode $_cfg_perm); refusing to source it." >&2
+        echo "Fix with: chmod 600 $CONFIG_FILE" >&2
+        exit 1
+    fi
     # shellcheck disable=SC1090  # user-supplied config, path known only at runtime
     source "$CONFIG_FILE"
 fi
@@ -230,12 +238,17 @@ if [[ "$DRY_RUN" == false ]]; then
 fi
 
 # --- FREE SPACE PREFLIGHT (v2) -------------------------------
-TOTAL_NEEDED=$(python3 -c "
+if ! TOTAL_NEEDED=$(python3 -c "
 import json
 with open('$CANDIDATE_FILE') as f:
     data = json.load(f)
 print(data.get('total_size_bytes', 0))
-")
+"); then
+    log "ERROR: could not parse candidate file $CANDIDATE_FILE (invalid JSON?)."
+    log "Rerun cold_storage_scan.py to regenerate it."
+    notify "cold_storage_cycle ERROR: candidate file parse failed ($CANDIDATE_FILE)"
+    exit 1
+fi
 COLD_AVAIL=$(df -PB1 "$COLD_ROOT" 2>/dev/null | awk 'NR==2{print $4}')
 COLD_AVAIL=${COLD_AVAIL:-0}
 NEEDED_WITH_HEADROOM=$(( TOTAL_NEEDED + TOTAL_NEEDED / 20 ))
@@ -296,9 +309,13 @@ unmonitor_item() {
 
     # The heredoc is python's stdin, which also shields the outer
     # while-read loop's stdin from being consumed.
-    python3 - "$BASE" "$KEY" "$ENDPOINT" "$ITEM_ID" "$NEW_PATH" <<'PYEOF'
-import sys, json, urllib.request
-base, key, endpoint, item_id, new_path = sys.argv[1:6]
+    # The API key is passed via the environment, NOT argv: argv is
+    # world-readable through /proc/<pid>/cmdline, but /proc/<pid>/environ
+    # is readable only by the owner and root.
+    NAS_ARR_KEY="$KEY" python3 - "$BASE" "$ENDPOINT" "$ITEM_ID" "$NEW_PATH" <<'PYEOF'
+import os, sys, json, urllib.request
+base, endpoint, item_id, new_path = sys.argv[1:5]
+key = os.environ["NAS_ARR_KEY"]
 url = f"{base}/api/v3/{endpoint}/{item_id}"
 headers = {"X-Api-Key": key, "Content-Type": "application/json"}
 try:
@@ -370,6 +387,16 @@ with open('$CANDIDATE_FILE') as f:
 for c in data['candidates']:
     print(f\"{c['type']}\t{c['path']}\t{c['name']}\t{c['size_bytes']}\t{c.get('id','')}\t{c.get('age_days', 0)}\")
 " | sort -t$'\t' -k6,6 -rn > "$TMPFILE"
+
+# L4: pipefail is off, so sort's success would mask a python parse
+# failure - check the emitter's status explicitly.
+if [[ "${PIPESTATUS[0]}" -ne 0 ]]; then
+    log "ERROR: could not parse candidate file $CANDIDATE_FILE (invalid JSON?)."
+    log "Rerun cold_storage_scan.py to regenerate it."
+    notify "cold_storage_cycle ERROR: candidate file parse failed ($CANDIDATE_FILE)"
+    rm -f "$TMPFILE"
+    exit 1
+fi
 
 TOTAL_ITEMS=$(wc -l < "$TMPFILE")
 log "Total candidates to process: $TOTAL_ITEMS"

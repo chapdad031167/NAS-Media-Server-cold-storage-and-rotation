@@ -14,11 +14,13 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y shellcheck rsync
       - name: bash syntax check
         run: |
-          for f in install.sh scripts/*.sh tests/shell/*.sh; do
+          for f in install.sh scripts/*.sh tests/*.sh tests/shell/*.sh; do
             bash -n "$f"
           done
       - name: shellcheck
-        run: shellcheck install.sh scripts/*.sh tests/shell/*.sh
+        run: shellcheck install.sh scripts/*.sh tests/*.sh tests/shell/*.sh
+      - name: secret scan
+        run: bash tests/secret_scan.sh
       - name: shell integration tests (dry-run safety contract + installer)
         run: |
           for t in tests/shell/test_*.sh; do
