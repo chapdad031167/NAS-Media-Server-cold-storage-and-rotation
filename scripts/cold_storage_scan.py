@@ -97,7 +97,9 @@ DEFAULTS = {
     "TV_MIN_AGE_DAYS": "365",
     "PROTECTED_LIST_FILE": os.path.join(_SCRIPT_DIR, "..", "protected_franchises.txt"),
     "LOG_RETENTION_DAYS": "90",
-    "LOCK_DIR": "/tmp",
+    # User-owned lock dir, not /tmp: predictable lock names in a
+    # world-writable dir invite lock-squatting by other local users.
+    "LOCK_DIR": os.path.join(_SCRIPT_DIR, "..", ".locks"),
     "NTFY_URL": "",
     "DISCORD_WEBHOOK_URL": "",
     "TAUTULLI_URL": "",
@@ -176,6 +178,9 @@ def acquire_lock(lock_path):
     """Take an exclusive non-blocking lock; exit if another scan
     holds it. Returns the open file object (keep it referenced —
     the lock lives as long as the fd)."""
+    lock_dir = os.path.dirname(lock_path)
+    if lock_dir:
+        os.makedirs(lock_dir, exist_ok=True)
     fd = open(lock_path, "w")
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)

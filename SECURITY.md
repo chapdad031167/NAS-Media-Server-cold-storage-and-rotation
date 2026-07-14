@@ -20,8 +20,12 @@ it before any public disclosure.
 - **Verified moves.** Cold storage uses rsync copy → checksum verify → delete
   source; a failed verify keeps the source untouched.
 - **Secrets stay out of argv.** API keys are passed to helper processes via
-  the environment, never as command-line arguments (argv is world-readable
-  through `/proc/<pid>/cmdline`; `/proc/<pid>/environ` is owner/root-only).
+  the environment, and webhook URLs (themselves credentials) reach curl via
+  `--config` on stdin — never as command-line arguments (argv is
+  world-readable through `/proc/<pid>/cmdline`; environ and stdin are not).
+- **Locks live in a user-owned directory** (`.locks/` in the install), not
+  world-writable `/tmp`, so another local user can't squat the lock names
+  and deny your cron runs.
 - **`config.env` is protected.** The installer creates it mode `600`. Because
   the scripts `source` it, they refuse to run if it is group- or
   other-writable (which would allow code injection), and `install.sh

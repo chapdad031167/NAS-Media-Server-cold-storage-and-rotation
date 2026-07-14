@@ -56,7 +56,9 @@ MEDIA_TV="${TV_DIR:-/volume1/TV Shows}"
 LOG_DIR="${LOG_DIR:-$SCRIPT_DIR/../logs}"
 LOG_FILE="$LOG_DIR/torrent_cleanup_$(date +%Y%m%d_%H%M%S).log"
 LOG_RETENTION_DAYS="${LOG_RETENTION_DAYS:-90}"
-LOCK_DIR="${LOCK_DIR:-${TMPDIR:-/tmp}}"
+# Locks default to a user-owned dir inside the install, not /tmp:
+# predictable names in world-writable /tmp invite lock-squatting.
+LOCK_DIR="${LOCK_DIR:-$SCRIPT_DIR/../.locks}"
 DRY_RUN=true
 
 if [[ "$1" == "--run" ]]; then
@@ -65,6 +67,7 @@ fi
 
 # Refuse to run concurrently (fd 9 holds the lock for the
 # lifetime of the script)
+mkdir -p "$LOCK_DIR"
 exec 9>"$LOCK_DIR/nas_media_torrent_cleanup.lock"
 if ! flock -n 9; then
     echo "ERROR: another torrent_cleanup.sh is already running. Exiting." >&2

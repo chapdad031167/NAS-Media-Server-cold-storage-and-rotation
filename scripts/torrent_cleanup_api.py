@@ -45,7 +45,8 @@ DEFAULTS = {
     "MOVIES_DIR": "/volume1/Movies",
     "TV_DIR": "/volume1/TV Shows",
     "LOG_DIR": os.path.join(_SCRIPT_DIR, "..", "logs"),
-    "LOCK_DIR": "/tmp",
+    # User-owned lock dir, not /tmp (see cold_storage_scan.py)
+    "LOCK_DIR": os.path.join(_SCRIPT_DIR, "..", ".locks"),
     "NTFY_URL": "",
     "DISCORD_WEBHOOK_URL": "",
 }
@@ -130,6 +131,9 @@ def notify(cfg, message):
 
 
 def acquire_lock(lock_path):
+    lock_dir = os.path.dirname(lock_path)
+    if lock_dir:
+        os.makedirs(lock_dir, exist_ok=True)
     fd = open(lock_path, "w")
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
