@@ -13,7 +13,9 @@
 #   (we WANT $KEY / $2 unexpanded). SC1091: install.sh is sourced at
 #   runtime to unit-test one of its functions; not statically followable.
 # SC2317: helpers below are invoked indirectly through check().
-# shellcheck disable=SC2016,SC1091,SC2317
+# SC2031: install.sh is deliberately sourced inside an isolation
+#   subshell (M1 test); its var reassignments are contained on purpose.
+# shellcheck disable=SC2016,SC1091,SC2317,SC2031
 set -u
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -66,6 +68,16 @@ RC=$?
 check "writable config causes non-zero exit" test "$RC" -ne 0
 check "writable config is reported clearly" grep -q "refusing to source" <<<"$OUT"
 
+# --doctor must refuse a writable config too (it also sources it) -
+# otherwise the scripts' guard is bypassable via the doctor.
+DOCTOR_DIR="$WORK/doctor_install"
+bash "$REPO_DIR/install.sh" --yes --dir "$DOCTOR_DIR" </dev/null >/dev/null 2>&1
+chmod 660 "$DOCTOR_DIR/config.env"
+OUT=$(bash "$DOCTOR_DIR/install.sh" --doctor </dev/null 2>&1)
+RC=$?
+check "doctor refuses writable config (non-zero exit)" test "$RC" -ne 0
+check "doctor reports the refusal" grep -q "refusing to source" <<<"$OUT"
+
 # A locked-down config (600) is accepted (sanity: guard is not overzealous)
 GOODCFG="$WORK/good.env"
 printf 'MOVIES_DIR="%s/empty"\n' "$WORK" > "$GOODCFG"
@@ -74,6 +86,28 @@ mkdir -p "$WORK/empty"
 OUT=$(CONFIG_FILE="$GOODCFG" LOG_DIR="$WORK/logs" LOCK_DIR="$WORK" \
       bash "$SCRIPTS/duplicate_cleanup.sh" 2>&1)
 check "mode-600 config is accepted" grep -q "duplicate_cleanup.sh" <<<"$OUT"
+
+# --- secret_scan: clean on repo, catches a planted key -------
+echo "=== secret_scan.sh ==="
+# Negative: the real repo must scan clean (the scanner must not
+# self-match its own detection pattern).
+check "secret_scan is clean on this repo" bash "$REPO_DIR/tests/secret_scan.sh"
+
+# Positive: a planted key in a copied tree must be caught (proves
+# the scan actually detects, not just that it exits 0).
+TREE="$WORK/tree/tests"
+mkdir -p "$TREE"
+cp "$REPO_DIR/tests/secret_scan.sh" "$TREE/secret_scan.sh"
+# Build the 32-hex fixture at RUNTIME so no 32-char hex literal lives
+# in this tracked file (which secret_scan would otherwise flag).
+fake_key=""
+for _ in 1 2 3 4; do fake_key+="deadbeef"; done   # 32 hex chars
+printf 'API = "%s"\n' "$fake_key" > "$WORK/tree/leak.py"
+if bash "$TREE/secret_scan.sh" >/dev/null 2>&1; then
+    check "secret_scan detects a planted key" false
+else
+    check "secret_scan detects a planted key" true
+fi
 
 echo
 echo "security tests: $PASS passed, $FAIL failed"

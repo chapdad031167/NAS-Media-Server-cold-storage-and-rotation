@@ -33,12 +33,22 @@ report() { # report <description> <grep-output>
 # The file list: tracked files if in a git repo, else everything
 # (minus the usual noise) so the scan also works from a tarball.
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    mapfile -t FILES < <(git ls-files)
+    mapfile -t _ALL < <(git ls-files)
 else
-    mapfile -t FILES < <(find . -type f \
+    mapfile -t _ALL < <(find . -type f \
         -not -path './.git/*' -not -path './logs/*' \
         -not -path '*/__pycache__/*' -not -path '*/.pytest_cache/*')
 fi
+
+# Exclude this scanner from its own scan: it legitimately contains the
+# known-key detection pattern, which would otherwise self-match.
+FILES=()
+for _f in "${_ALL[@]}"; do
+    case "$_f" in
+        *secret_scan.sh) continue ;;
+    esac
+    FILES+=("$_f")
+done
 
 # 1. Known-leaked keys from the original scripts (exact match)
 KNOWN='d69990213cc84c2cacfd296337497283|d522a749cff641dcbff868ed34de5465'
