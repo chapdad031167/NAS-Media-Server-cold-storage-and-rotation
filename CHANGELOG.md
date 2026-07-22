@@ -5,6 +5,13 @@ All notable changes to this project are documented here. Versioning follows
 
 ## [Unreleased]
 
+### Docs
+- Compatibility matrix and INSTALL.md updated to reflect the author's
+  migration from Synology DSM to a UGREEN NASync running UGOS Pro: UGOS is
+  now the tested production platform, DSM is documented-but-no-longer-
+  retested, and INSTALL.md covers SSH setup, USB mount discovery, and scan
+  scheduling (cron vs Task Scheduler) for both.
+
 ### Security hardening
 - API keys are now passed to helper processes via the environment, never as
   command-line arguments (argv is world-readable via `/proc/<pid>/cmdline`);

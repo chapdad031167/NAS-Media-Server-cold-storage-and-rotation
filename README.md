@@ -90,8 +90,9 @@ Honest accounting of what's verified where:
 | Layer | Status |
 |---|---|
 | Unit + integration tests | ✅ Every commit, in CI: Ubuntu latest, bash 5.x, Python 3.11, shellcheck. All API interactions are mocked — tests never touch a live server. |
-| Author's production NAS | ✅ Synology DSM, Radarr + Sonarr + qBittorrent + Plex — the core pipeline (scan, cycle, duplicate and torrent cleanup) grew out of scripts running there. |
+| Author's production NAS | ✅ UGREEN NASync running UGOS Pro (Debian-based), Radarr + Sonarr + qBittorrent + Plex. The core pipeline (scan, cycle, duplicate and torrent cleanup) grew out of scripts written on the author's previous Synology DSM box and now runs in production on UGOS. |
 | Live API round-trips for the newer opt-ins | ⚠️ `UPDATE_ARR_PATHS`, the Tautulli watched guard, `torrent_cleanup_api.py`, and restore's re-monitor are built against the documented v3/v2 API shapes and fully unit-tested, but young in live use. Run `install.sh --doctor` first and supervise your first live run. |
+| Synology DSM | ✅→❓ The pipeline's original home — [INSTALL.md](INSTALL.md) keeps the full DSM walkthrough — but since the author migrated to UGOS, current releases are no longer re-tested on DSM. |
 | Other platforms (QNAP, TrueNAS, unRAID, generic Linux) | ❓ Should work anywhere with GNU coreutils, bash 4+, python3 ≥3.8, rsync, and flock — but not systematically tested. BusyBox-only userlands may lack `find -printf` / `du -sb`. Reports welcome via issues. |
 
 ## Setup
@@ -99,10 +100,10 @@ Honest accounting of what's verified where:
 Requirements: bash 4+, Python 3.8+ (stdlib only), rsync, and Radarr/Sonarr v3
 API access.
 
-> 📖 **Synology users:** [INSTALL.md](INSTALL.md) is a full step-by-step
-> walkthrough (SSH, install, the config prompts — including the USB-mount
-> gotcha — and DSM Task Scheduler). The quick version below works on any
-> supported platform.
+> 📖 **UGREEN (UGOS) and Synology users:** [INSTALL.md](INSTALL.md) is a full
+> step-by-step walkthrough (SSH, install, the config prompts — including the
+> USB-mount gotcha — and scheduling on each platform). The quick version
+> below works on any supported platform.
 
 ### Quick install (on the NAS)
 
