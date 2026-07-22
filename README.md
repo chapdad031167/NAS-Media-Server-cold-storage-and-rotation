@@ -45,6 +45,7 @@ weekend." Three specific leaks:
 | [`scripts/cold_storage_scan.py`](scripts/cold_storage_scan.py) | Read-only scanner. Queries Radarr (movies) and Sonarr (TV) — and optionally Tautulli watch history — and writes a JSON candidate list of media eligible for cold storage. Nothing is moved here. |
 | [`scripts/cold_storage_cycle.sh`](scripts/cold_storage_cycle.sh) | Consumes the candidate JSON and moves each item to the USB archive with rsync copy → checksum verify → delete source, records it in the archive manifest, then unmonitors it in Radarr/Sonarr (optionally repointing its path so it stays visible). Can archive oldest-first until a pool-capacity target is met. |
 | [`scripts/cold_storage_restore.sh`](scripts/cold_storage_restore.sh) | The way back: verified move from the archive to the hot pool, re-monitored in Radarr/Sonarr via the manifest. Cold storage is a rotation, not a one-way trip. |
+| [`scripts/approval_poll.sh`](scripts/approval_poll.sh) | The execution half of [one-tap approval](#hands-off-reports--one-tap-approval-optional): polls a private ntfy topic and runs the archive cycle only when a message carrying your secret token arrives — published by the "Approve archive" button on the scan report notification. Disarmed unless explicitly configured. |
 
 See [docs/architecture.md](docs/architecture.md) for the decision rules and
 the full operational flow.
@@ -68,7 +69,10 @@ first:
   rsync copy → checksum verify → delete source. A move interrupted mid-copy
   is resumed and re-verified on the next run, never silently skipped.
 - **Manual trigger for destruction.** Scanning runs on cron; moving and
-  deleting only ever happens when a human passes `--run`.
+  deleting only ever happens when a human passes `--run` — or explicitly
+  approves a delivered scan report via the optional
+  [one-tap flow](#hands-off-reports--one-tap-approval-optional)
+  (off by default; a tap is still a human decision).
 - **Free-space preflight.** The cycle aborts before touching anything if the
   archive drive can't hold the whole candidate set plus 5% headroom.
 - **Watched guard (optional).** With Tautulli configured, anything played
@@ -161,6 +165,35 @@ Typical cron setup (scan automatically, execute manually):
 # Weekly cold-storage scan, Sunday 03:00 — read-only
 0 3 * * 0  python3 /path/to/scripts/cold_storage_scan.py
 ```
+
+### Hands-off reports + one-tap approval (optional)
+
+The default loop is: cron scans weekly → you SSH in, read the dry-run
+report, type `--run`. With [ntfy](https://ntfy.sh) configured, the same
+human decision compresses down to a phone tap:
+
+1. The weekly scan pushes its report — totals plus the biggest
+   candidates — to your phone via `NTFY_URL`. With `REMOTE_APPROVE=true`
+   the notification carries an **Approve archive** button.
+2. Tapping the button publishes your secret `APPROVE_TOKEN` to a second
+   private topic (`APPROVE_URL`).
+3. `approval_poll.sh`, cron'd every few minutes, sees the token and runs
+   `cold_storage_cycle.sh --run` — every guard still applies (candidate
+   staleness, size re-verify, free-space preflight, checksum-verified
+   moves) — then the cycle pushes its own result notification back.
+
+```cron
+# Weekly cold-storage scan, Sunday 03:00 — read-only
+0 3 * * 0  python3 /path/to/scripts/cold_storage_scan.py
+# Act on a tapped approval within 10 minutes (inert until then)
+*/10 * * * *  bash /path/to/scripts/approval_poll.sh
+```
+
+Configuration lives in `config.env.example` (the "One-tap archive
+approval" block); `install.sh --doctor` verifies it. Both topic URLs and
+the token are credentials — see [SECURITY.md](SECURITY.md). No approval,
+no action: the poller exits silently unless armed, and ignoring a report
+means nothing moves.
 
 ### Running the tests
 

@@ -102,6 +102,12 @@ DEFAULTS = {
     "LOCK_DIR": os.path.join(_SCRIPT_DIR, "..", ".locks"),
     "NTFY_URL": "",
     "DISCORD_WEBHOOK_URL": "",
+    # One-tap archive approval (see approval_poll.sh). Off unless
+    # REMOTE_APPROVE=true AND both APPROVE_URL and APPROVE_TOKEN
+    # are set.
+    "REMOTE_APPROVE": "false",
+    "APPROVE_URL": "",
+    "APPROVE_TOKEN": "",
     "TAUTULLI_URL": "",
     "TAUTULLI_API_KEY": "",
     "WATCHED_GUARD_DAYS": "180",
@@ -248,15 +254,20 @@ def api_get(base_url, apikey, endpoint):
         return None
 
 
-def notify(cfg, message):
+def notify(cfg, message, ntfy_headers=None):
     """Best-effort push notification (ntfy and/or Discord webhook).
     No-op when neither URL is configured; a failed push warns but
-    never breaks the run."""
+    never breaks the run. ntfy_headers lets the caller attach extra
+    ntfy headers (e.g. an Actions button); Discord has no header
+    mechanism, so it gets the message only (capped to its limit)."""
     ntfy = cfg.get("NTFY_URL", "")
     if ntfy:
         try:
+            headers = {"Title": "cold_storage_scan"}
+            if ntfy_headers:
+                headers.update(ntfy_headers)
             req = urllib.request.Request(
-                ntfy, data=message.encode(), headers={"Title": "cold_storage_scan"}
+                ntfy, data=message.encode(), headers=headers
             )
             with urllib.request.urlopen(req, timeout=10):
                 pass
@@ -267,13 +278,52 @@ def notify(cfg, message):
         try:
             req = urllib.request.Request(
                 discord,
-                data=json.dumps({"content": message}).encode(),
+                data=json.dumps({"content": message[:1900]}).encode(),
                 headers={"Content-Type": "application/json"},
             )
             with urllib.request.urlopen(req, timeout=10):
                 pass
         except Exception as e:
             log(f"WARNING: discord notification failed: {e}")
+
+
+def build_report(candidates, total_size, limit=10):
+    """Multi-line scan digest for push notifications: totals plus
+    the biggest candidates, so approve/skip can be decided from
+    the notification itself without SSHing in."""
+    if not candidates:
+        return "No cold storage candidates this scan."
+    lines = [f"{len(candidates)} candidate(s), {human_size(total_size)} total:"]
+    top = sorted(candidates, key=lambda c: c["size_bytes"], reverse=True)
+    for c in top[:limit]:
+        tag = "TV" if c.get("type") == "tv" else "Movie"
+        lines.append(
+            f"• {c['size_human']}  {c['name']}  [{tag}, {c['age_days']}d]"
+        )
+    if len(candidates) > limit:
+        lines.append(f"…and {len(candidates) - limit} more in the candidate file")
+    return "\n".join(lines)
+
+
+def approve_action_headers(cfg):
+    """ntfy headers adding a one-tap "Approve archive" button, or
+    None when remote approval isn't (fully) configured. Tapping the
+    button POSTs APPROVE_TOKEN to the APPROVE_URL topic, where a
+    cron'd approval_poll.sh picks it up and runs the archive cycle.
+    ntfy's Actions header is comma-delimited, so the URL and token
+    must not contain commas."""
+    if cfg.get("REMOTE_APPROVE", "").strip().lower() != "true":
+        return None
+    url = cfg.get("APPROVE_URL", "").strip()
+    token = cfg.get("APPROVE_TOKEN", "").strip()
+    if not url or not token or "," in url or "," in token:
+        return None
+    return {
+        "Actions": (
+            f"http, Approve archive, {url}, method=POST, "
+            f"body={token}, clear=true"
+        )
+    }
 
 
 def parse_added(date_str, now=None):
@@ -651,11 +701,10 @@ def main():
         json.dump(output, f, indent=2)
 
     log(f"Candidate list written to {cfg['CANDIDATE_FILE']}")
-    notify(
-        cfg,
-        f"cold_storage_scan: {len(all_candidates)} candidate(s) "
-        f"({human_size(total_size)}) ready for review",
-    )
+    report = build_report(all_candidates, total_size)
+    # Only offer the approve button when there is something to approve.
+    actions = approve_action_headers(cfg) if all_candidates else None
+    notify(cfg, report, ntfy_headers=actions)
     lock.close()
 
 

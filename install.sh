@@ -360,6 +360,19 @@ doctor() (
         fi
     fi
 
+    # One-tap approval: armed-but-incomplete config means the scan
+    # sends no button and/or the poller refuses to run - surface it.
+    if [[ "${REMOTE_APPROVE:-false}" == "true" ]]; then
+        if is_placeholder "${NTFY_URL:-}" || is_placeholder "${APPROVE_URL:-}" \
+                || is_placeholder "${APPROVE_TOKEN:-}"; then
+            warn "REMOTE_APPROVE=true but NTFY_URL/APPROVE_URL/APPROVE_TOKEN incomplete - one-tap approval won't work"
+        elif [[ "${APPROVE_URL:-}" == *,* || "${APPROVE_TOKEN:-}" == *,* ]]; then
+            warn "APPROVE_URL/APPROVE_TOKEN must not contain commas (ntfy Actions header) - one-tap approval won't work"
+        else
+            ok "one-tap approval configured (remember to cron approval_poll.sh)"
+        fi
+    fi
+
     _doctor_done 0
 )
 
@@ -380,6 +393,9 @@ next_steps() {
     say "     DSM can overwrite /etc/crontab on updates."
     say "  5. Destructive steps stay manual: add --run only after you have"
     say "     read a dry-run report and agree with every line of it."
+    say "     (Or configure one-tap approval - see config.env.example - and"
+    say "     cron approval_poll.sh so the 'human touch' is a phone tap:"
+    say "       */10 * * * *  bash $INSTALL_DIR/scripts/approval_poll.sh )"
 }
 
 # --- MAIN ----------------------------------------------------
