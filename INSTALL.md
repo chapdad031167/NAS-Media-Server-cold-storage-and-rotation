@@ -168,6 +168,27 @@ python3 /volume1/docker/scripts/nas-media-automation/scripts/cold_storage_scan.p
 Either way, leave the destructive `--run` steps manual — reading the dry-run
 report first is the whole safety model.
 
+### Optional: report to your phone, tap to execute
+
+One-tap approval keeps that model but moves "reading the report" to a push
+notification and "typing `--run`" to a button tap:
+
+1. Install the [ntfy](https://ntfy.sh) app on your phone and subscribe to a
+   private topic; put that topic URL in `NTFY_URL`.
+2. Fill in the "One-tap archive approval" block in `config.env` — a second
+   private topic (`APPROVE_URL`), a random secret (`APPROVE_TOKEN`), and
+   `REMOTE_APPROVE=true`. The comments there walk through it.
+3. Add a second cron line so the NAS acts on your tap:
+
+```cron
+*/10 * * * *  bash /volume1/docker/scripts/nas-media-automation/scripts/approval_poll.sh
+```
+
+Now Sunday's scan report arrives on your phone with an **Approve archive**
+button. Ignore it and nothing moves; tap it and within ~10 minutes the NAS
+runs the archive cycle (all of its guards still apply) and pushes the result
+back to you. `bash install.sh --doctor` verifies the approval configuration.
+
 ---
 
 ## Troubleshooting

@@ -574,6 +574,97 @@ class TestNotify:
         with mock.patch.object(scan.urllib.request, "urlopen", side_effect=err):
             scan.notify(cfg, "hello")  # must not raise
 
+    def test_extra_ntfy_headers_attached(self):
+        cfg = {"NTFY_URL": "https://ntfy.example/topic", "DISCORD_WEBHOOK_URL": ""}
+        with mock.patch.object(scan.urllib.request, "urlopen") as m:
+            m.return_value.__enter__ = lambda s: s
+            m.return_value.__exit__ = lambda s, *a: False
+            scan.notify(cfg, "report", ntfy_headers={"Actions": "http, Go, u"})
+        req = m.call_args_list[0][0][0]
+        assert req.get_header("Actions") == "http, Go, u"
+        assert req.get_header("Title") == "cold_storage_scan"
+
+    def test_discord_message_capped(self):
+        cfg = {"NTFY_URL": "", "DISCORD_WEBHOOK_URL": "https://discord.example/hook"}
+        with mock.patch.object(scan.urllib.request, "urlopen") as m:
+            m.return_value.__enter__ = lambda s: s
+            m.return_value.__exit__ = lambda s, *a: False
+            scan.notify(cfg, "x" * 5000)
+        req = m.call_args_list[0][0][0]
+        assert len(json.loads(req.data.decode())["content"]) == 1900
+
+
+# --- Scan report digest + one-tap approve headers --------------------------
+
+
+def make_candidate(name, size_gb, kind="movie", age=500):
+    size = int(size_gb * 1024 ** 3)
+    return {
+        "type": kind,
+        "id": 1,
+        "path": f"/volume1/Movies/{name}",
+        "name": name,
+        "size_bytes": size,
+        "size_human": scan.human_size(size),
+        "age_days": age,
+    }
+
+
+class TestBuildReport:
+    def test_empty_scan(self):
+        assert "No cold storage candidates" in scan.build_report([], 0)
+
+    def test_totals_and_items(self):
+        cands = [make_candidate("Big Film", 8), make_candidate("Small Film", 2)]
+        report = scan.build_report(cands, sum(c["size_bytes"] for c in cands))
+        assert report.splitlines()[0].startswith("2 candidate(s)")
+        assert "Big Film" in report and "Small Film" in report
+
+    def test_sorted_by_size_and_capped(self):
+        cands = [make_candidate(f"Film {i}", i) for i in range(1, 13)]
+        report = scan.build_report(cands, 0, limit=10)
+        lines = report.splitlines()
+        assert "Film 12" in lines[1]  # biggest first
+        assert "Film 2" not in report and "Film 1 " not in report  # below the cap
+        assert "and 2 more" in lines[-1]
+
+    def test_tv_tagged(self):
+        report = scan.build_report([make_candidate("Ended Show", 4, kind="tv")], 0)
+        assert "[TV, 500d]" in report
+
+
+class TestApproveActionHeaders:
+    ARMED = {
+        "REMOTE_APPROVE": "true",
+        "APPROVE_URL": "https://ntfy.example/approve",
+        "APPROVE_TOKEN": "sekrit",
+    }
+
+    def test_disarmed_by_default(self):
+        assert scan.approve_action_headers(dict(scan.DEFAULTS)) is None
+
+    def test_armed_builds_button(self):
+        headers = scan.approve_action_headers(self.ARMED)
+        assert headers["Actions"] == (
+            "http, Approve archive, https://ntfy.example/approve, "
+            "method=POST, body=sekrit, clear=true"
+        )
+
+    def test_incomplete_config_disarms(self):
+        for missing in ("APPROVE_URL", "APPROVE_TOKEN"):
+            cfg = dict(self.ARMED, **{missing: ""})
+            assert scan.approve_action_headers(cfg) is None
+        assert scan.approve_action_headers(dict(self.ARMED, REMOTE_APPROVE="yes")) is None
+
+    def test_commas_disarm(self):
+        # ntfy's Actions header is comma-delimited; a comma would
+        # corrupt the button rather than fire a wrong one.
+        assert scan.approve_action_headers(dict(self.ARMED, APPROVE_TOKEN="a,b")) is None
+        assert (
+            scan.approve_action_headers(dict(self.ARMED, APPROVE_URL="https://x/a,b"))
+            is None
+        )
+
 
 # --- End-to-end scan over mocked API data ---------------------------------
 

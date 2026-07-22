@@ -34,6 +34,19 @@ it before any public disclosure.
   the shell scripts use common coreutils. Smaller supply-chain surface.
 - **CI secret scan.** `tests/secret_scan.sh` runs on every push/PR and fails
   the build if a real-looking API key or private IP lands in a tracked file.
+- **One-tap approval is disarmed by default and token-gated.** The optional
+  remote-approval flow (`approval_poll.sh`) does nothing unless
+  `REMOTE_APPROVE=true` *and* both `APPROVE_URL` and `APPROVE_TOKEN` are
+  configured. Execution requires a message carrying the exact secret token
+  on a private ntfy topic; non-matching messages are logged and skipped, a
+  message-id state file makes approvals replay-proof, at most one cycle runs
+  per poll, and the triggered run keeps every cold_storage_cycle.sh guard
+  (candidate staleness, size re-verify, free-space preflight, verified
+  moves). Both ntfy topic URLs and the token are **credentials**: anyone
+  holding them can read scan reports or attempt approvals. Pick unguessable
+  topic names, generate the token randomly (`openssl rand -base64 24` — no
+  commas), and rotate all three if exposed. Like the webhook URLs, they
+  reach curl via `--config` on stdin, never argv.
 
 ## Your responsibilities
 

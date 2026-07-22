@@ -5,6 +5,18 @@ All notable changes to this project are documented here. Versioning follows
 
 ## [Unreleased]
 
+### Added
+- **One-tap archive approval** (optional, off by default). The weekly scan
+  now pushes its full report digest (totals + biggest candidates) instead
+  of a one-line summary; with `REMOTE_APPROVE=true` the ntfy notification
+  carries an "Approve archive" action button, and a new cron-able
+  `scripts/approval_poll.sh` executes `cold_storage_cycle.sh --run` only
+  when a message carrying the secret `APPROVE_TOKEN` arrives on a private
+  approval topic. Replay-proof via a message-id state file; non-matching
+  messages are logged and skipped; every cycle guard still applies to the
+  triggered run. `install.sh --doctor` validates the approval config.
+  +10 pytest and +18 shell checks.
+
 ### Docs
 - Compatibility matrix and INSTALL.md updated to reflect the author's
   migration from Synology DSM to a UGREEN NASync running UGOS Pro: UGOS is
