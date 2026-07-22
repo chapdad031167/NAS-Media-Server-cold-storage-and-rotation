@@ -1,7 +1,9 @@
-# Installing on a Synology NAS
+# Installing on a NAS (UGREEN UGOS Pro / Synology DSM)
 
-A step-by-step walkthrough for DSM. The commands are copy-paste friendly —
-do the parts in order. Nothing here touches your media until you explicitly
+A step-by-step walkthrough for the two platforms the pipeline has called
+home: UGREEN's UGOS Pro (the author's current production NAS) and Synology
+DSM (its original home). The commands are copy-paste friendly — do the
+parts in order. Nothing here touches your media until you explicitly
 pass `--run` to a script, and every destructive step defaults to a dry run.
 
 Other NASes (QNAP, TrueNAS, unRAID) and generic Linux work the same way; only
@@ -11,13 +13,18 @@ the paths differ. See the [compatibility notes](README.md#compatibility).
 
 ## Part 1 — One-time prep
 
-**1. Enable SSH.** DSM → **Control Panel** → **Terminal & SNMP** → check
-**Enable SSH service** → **Apply**.
+**1. Enable SSH.**
+
+- **UGOS Pro:** **Control Panel** → **Terminal** → enable **SSH** and note
+  the port. (Menu names can shift between UGOS versions — it lives in the
+  Control Panel either way.)
+- **DSM:** **Control Panel** → **Terminal & SNMP** → check **Enable SSH
+  service** → **Apply**.
 
 **2. Connect from your computer:**
 
 ```bash
-ssh YOUR_DSM_ADMIN@YOUR_NAS_IP
+ssh YOUR_ADMIN_USER@YOUR_NAS_IP
 ```
 
 (Add `-p PORT` if you moved SSH off port 22.)
@@ -34,7 +41,9 @@ cd nas-media-automation
 rm ../main.tar.gz
 ```
 
-You are now in `/volume1/docker/scripts/nas-media-automation`.
+You are now in `/volume1/docker/scripts/nas-media-automation`. (Both UGOS
+and DSM mount the first storage pool at `/volume1`; adjust if yours
+differs.)
 
 ---
 
@@ -59,10 +68,10 @@ keys), and walks you through the core settings. Have these ready:
 
 ### ⚠️ Getting COLD_ROOT right (the common mistake)
 
-`COLD_ROOT` is where aged media is archived — your USB drive. Synology does
-**not** mount USB drives at a tidy `/mnt/usb`; the real path looks like
-`/mnt/@usb/sde1` or `/volumeUSB1/usbshare`. Find yours **with the drive
-plugged in**:
+`COLD_ROOT` is where aged media is archived — your USB drive. Neither UGOS
+nor DSM mounts USB drives at a tidy `/mnt/usb`: on Synology the real path
+looks like `/mnt/@usb/sde1` or `/volumeUSB1/usbshare`, and UGOS uses its
+own scheme. Don't guess — find yours **with the drive plugged in**:
 
 ```bash
 df -h | grep -i usb
@@ -129,13 +138,24 @@ deleted from the source; a failed verify keeps the source untouched.
 
 ---
 
-## Part 5 — Schedule the scan (DSM-safe)
+## Part 5 — Schedule the scan
 
-Use **Task Scheduler**, not `crontab` — DSM can overwrite `/etc/crontab` on
-updates.
+**UGOS Pro** is Debian-based and (as of this writing) has no DSM-style GUI
+for scheduling user scripts, so use plain cron:
 
-DSM → **Control Panel** → **Task Scheduler** → **Create** → **Scheduled
-Task** → **User-defined script**:
+```bash
+crontab -e
+# add: weekly scan, Sunday 03:00 — read-only
+0 3 * * 0  python3 /volume1/docker/scripts/nas-media-automation/scripts/cold_storage_scan.py
+```
+
+Run `crontab -l` after your next UGOS firmware update to confirm the entry
+survived — treat a wiped crontab as possible until you've seen one update
+leave it alone.
+
+**DSM:** use **Task Scheduler**, not `crontab` — DSM can overwrite
+`/etc/crontab` on updates. **Control Panel** → **Task Scheduler** →
+**Create** → **Scheduled Task** → **User-defined script**:
 
 - **General:** run as the user that owns your media
 - **Schedule:** weekly, e.g. Sunday 03:00
@@ -145,8 +165,8 @@ Task** → **User-defined script**:
 python3 /volume1/docker/scripts/nas-media-automation/scripts/cold_storage_scan.py
 ```
 
-Leave the destructive `--run` steps manual — reading the dry-run report first
-is the whole safety model.
+Either way, leave the destructive `--run` steps manual — reading the dry-run
+report first is the whole safety model.
 
 ---
 
@@ -159,7 +179,7 @@ Run `bash install.sh --doctor` first — it catches most problems.
 | `cold drive has 0.00 GB free` / `mkdir … Permission denied` | `COLD_ROOT` points at a path that doesn't exist. Run `df -h \| grep -i usb`, set `COLD_ROOT` to the real mount + `/Cold`. |
 | `Cold storage mount not found` | Same cause — the archive drive isn't mounted, or `COLD_ROOT` is wrong. Plug the drive in / fix the path. |
 | Radarr/Sonarr `NOT reachable` | Check the URL, port, and API key in `config.env`; confirm the service is up from the NAS itself. |
-| `flock` missing | Ships with util-linux; on a bare DSM install it via [Entware](https://github.com/Entware/Entware) (`opkg install util-linux`). Only the concurrent-run lock is affected. |
+| `flock` missing | Ships with util-linux, which Debian-based UGOS Pro includes out of the box; on a bare DSM install it via [Entware](https://github.com/Entware/Entware) (`opkg install util-linux`). Only the concurrent-run lock is affected. |
 | Can't write to `COLD_ROOT` | The USB share is owned by root. Create a shared folder on it via **Control Panel → Shared Folder** with read/write for your user, or run the scripts as a user that owns the mount. |
 
 For anything else, open an issue with your `--doctor` output (redact API

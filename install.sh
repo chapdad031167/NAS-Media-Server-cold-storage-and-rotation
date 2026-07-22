@@ -374,6 +374,7 @@ next_steps() {
     say "       bash $INSTALL_DIR/scripts/cold_storage_cycle.sh"
     say "  4. Schedule the read-only scan (weekly, Sunday 03:00):"
     say "       0 3 * * 0  python3 $INSTALL_DIR/scripts/cold_storage_scan.py"
+    say "     On UGOS Pro (Debian-based) add it with crontab -e."
     say "     On Synology DSM use Control Panel > Task Scheduler"
     say "     (a user-defined script task) rather than editing crontab -"
     say "     DSM can overwrite /etc/crontab on updates."
